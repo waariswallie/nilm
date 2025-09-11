@@ -2,7 +2,7 @@ name: Build & Deploy (Raspberry Pi)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, init ]
   workflow_dispatch: {}
 
 jobs:
@@ -29,6 +29,15 @@ jobs:
         id: meta
         run: |
           echo "VERSION=${GITHUB_SHA::7}" >> $GITHUB_ENV
+      - name: Compute tags
+        id: tags
+        run: |
+          BRANCH="${GITHUB_REF##*/}"
+          SAFE_BRANCH=${BRANCH//[^a-zA-Z0-9_-]/-}
+          echo "BRANCH_NAME=$BRANCH" >> $GITHUB_ENV
+          echo "SAFE_BRANCH=$SAFE_BRANCH" >> $GITHUB_ENV
+          echo "IMAGE_BASE=ghcr.io/${{ github.repository_owner }}/nilm-app" >> $GITHUB_ENV
+          echo "TAGS=ghcr.io/${{ github.repository_owner }}/nilm-app:${SAFE_BRANCH}-latest,ghcr.io/${{ github.repository_owner }}/nilm-app:${SAFE_BRANCH}-${VERSION}" >> $GITHUB_OUTPUT
       - name: Build & Push (multi-arch)
         uses: docker/build-push-action@v6
         with:
@@ -36,14 +45,11 @@ jobs:
           file: Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/nilm-app:latest
-            ghcr.io/${{ github.repository_owner }}/nilm-app:${{ env.VERSION }}
+          tags: ${{ steps.tags.outputs.TAGS }}
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
     steps:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.0.3
@@ -54,24 +60,33 @@ jobs:
           port: ${{ secrets.RPI_PORT }}
           script: |
             set -e
-            mkdir -p ~/nilm
-            cd ~/nilm
-            echo "Pull image"
-            docker pull ghcr.io/${{ github.repository_owner }}/nilm-app:latest
-            if [ ! -f docker-compose.yml ]; then
-              echo "Create docker-compose.yml"
-              printf "%s\n" \
-                "services:" \
-                "  nilm-app:" \
-                "    image: ghcr.io/${{ github.repository_owner }}/nilm-app:latest" \
-                "    container_name: nilm-app" \
-                "    restart: unless-stopped" \
-                "    env_file:" \
-                "      - .env" \
-                "    ports:" \
-                "      - 8000:8000" > docker-compose.yml
+            BRANCH="${GITHUB_REF##*/}"
+            SAFE_BRANCH=${BRANCH//[^a-zA-Z0-9_-]/-}
+            IMAGE="ghcr.io/${{ github.repository_owner }}/nilm-app:${SAFE_BRANCH}-latest"
+            # Map branch to port (main=8000, init=8001 default)
+            PORT=8000
+            if [ "$BRANCH" = "init" ]; then PORT=8001; fi
+            APP_DIR=~/nilm-$SAFE_BRANCH
+            mkdir -p "$APP_DIR"
+            cd "$APP_DIR"
+            echo "Pull image $IMAGE"
+            docker pull "$IMAGE"
+            COMPOSE_FILE=docker-compose.yml
+            echo "Generate compose file ($COMPOSE_FILE)"
+            printf "%s\n" \
+              "services:" \
+              "  nilm-app:" \
+              "    image: $IMAGE" \
+              "    container_name: nilm-app-$SAFE_BRANCH" \
+              "    restart: unless-stopped" \
+              "    env_file:" \
+              "      - .env" \
+              "    ports:" \
+              "      - $PORT:8000" > $COMPOSE_FILE
+            if [ ! -f .env ]; then
+              echo "WARNING: .env missing in $APP_DIR (create it to configure).";
             fi
-            echo "Deploy stack"
+            echo "Deploy stack ($BRANCH)"
             docker compose down || true
             docker compose up -d
-            echo "Deployed"
+            echo "Deployed branch $BRANCH on port $PORT"
