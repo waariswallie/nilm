@@ -1,0 +1,14 @@
+services:
+  nilm-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nilm-app:latest
+    container_name: nilm-app
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./:/app

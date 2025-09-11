@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+.poetry-cache/
+.ipynb_checkpoints/
+.dist/

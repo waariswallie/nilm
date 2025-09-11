@@ -1,1 +1,4 @@
 pandas>=2.0.0
+
+# Let op: voor de container / volledige pipeline worden dependencies beheerd via Poetry in
+# pyproject.toml. Dit bestand blijft voor snelle lokale playground tests minimaal.
