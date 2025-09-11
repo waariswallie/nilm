@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+.git
+.github
+.vscode
+.tests
+ Dockerfile
+ docker-compose.yml
+ docker-compose.prod.yml
+ .env
+ .env.sample
+ poetry.lock
