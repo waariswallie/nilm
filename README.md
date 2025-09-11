@@ -77,6 +77,36 @@ tests/
 - [ ] ML disaggregation (seq2point / HMM)
 - [ ] Export & rapportage endpoints
 
+## CI/CD & Deploy (Raspberry Pi)
+Automatisch build & deploy bij push naar `main`:
+
+1. GitHub Actions workflow `deploy.yml` bouwt een multi-arch image (amd64 + arm64) en pusht naar GHCR `ghcr.io/<owner>/nilm-app:latest`.
+2. Tweede job maakt via SSH verbinding met je Raspberry Pi (bijv. `raspi52` op 192.168.0.70) en runt `docker compose up -d`.
+
+### Vereiste GitHub Secrets
+| Secret | Beschrijving |
+|--------|--------------|
+| `RPI_HOST` | IP of hostname (bv. 192.168.0.70) |
+| `RPI_USER` | SSH user (bv. `pi`) |
+| `RPI_SSH_KEY` | Private key (PEM) zonder passphrase |
+| `RPI_PORT` | (optioneel) SSH poort, default 22 |
+
+### Voorbereiden Raspberry Pi
+```bash
+sudo apt update && sudo apt install -y docker.io docker-compose-plugin
+sudo usermod -aG docker $USER
+mkdir -p ~/nilm
+cd ~/nilm
+cp /path/naar/.env .env   # vul env variabelen
+```
+
+Eerste deploy maakt automatisch een eenvoudige `docker-compose.yml` indien niet aanwezig.
+
+### Handmatig herstarten
+```bash
+ssh pi@192.168.0.70 "cd ~/nilm && docker compose pull && docker compose up -d"
+```
+
 ## Ontwerpkeuzes
 - Event-based i.p.v. volledige sequence model direct → sneller inzicht
 - DBSCAN voor unsupervised grouping; later rule + manual labeling

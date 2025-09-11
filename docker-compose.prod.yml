@@ -1,0 +1,12 @@
+services:
+  nilm-app:
+    image: ghcr.io/waariswallie/nilm-app:latest
+    container_name: nilm-app
+    env_file:
+      - .env
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    # Bind mount optional if you still want live code edits; remove for immutable image
+    # volumes:
+    #   - ./:/app:ro
