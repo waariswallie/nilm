@@ -25,7 +25,19 @@ jobs:
           echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER}/nilm-app:${SAFE_BRANCH}-latest" >> $GITHUB_OUTPUT
       - name: Docker login (GHCR)
         run: |
-          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          set -e
+          DOCKER_VERSION=$(docker version --format '{{.Client.Version}}' 2>/dev/null || true)
+          echo "Docker client version: $DOCKER_VERSION"
+          if docker login ghcr.io --help 2>&1 | grep -q -- '--password-stdin'; then
+            echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin || {
+              echo "Primary login method failed; retry without --password-stdin";
+              docker login ghcr.io -u "$GITHUB_ACTOR" -p "$GITHUB_TOKEN";
+            }
+          else
+            echo "--password-stdin not supported; using legacy -p option";
+            docker login ghcr.io -u "$GITHUB_ACTOR" -p "$GITHUB_TOKEN"
+          fi
+          echo "Login to GHCR succeeded"
       - name: Pull & restart container
         run: |
           set -e
