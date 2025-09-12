@@ -50,6 +50,8 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # Allow manual override to skip deploy (set SECRET SKIP_DEPLOY=1 or use workflow_dispatch input later)
+    if: ${{ !secrets.SKIP_DEPLOY || secrets.SKIP_DEPLOY != '1' }}
     steps:
       - name: Validate required secrets
         run: |
@@ -80,6 +82,18 @@ jobs:
           port: ${{ secrets.RPI_PORT || 22 }}
           script: |
             set -e
+            echo "Pre-flight: ping host"
+            if command -v ping >/dev/null 2>&1; then
+              if ! ping -c 2 -W 2 ${{ secrets.RPI_HOST }} >/dev/null 2>&1; then
+                echo "Host unreachable via ICMP; attempting SSH anyway...";
+              fi
+            fi
+            echo "Pre-flight: test SSH port"
+            if command -v nc >/dev/null 2>&1; then
+              if ! nc -z -w3 ${{ secrets.RPI_HOST }} ${{ secrets.RPI_PORT || 22 }}; then
+                echo "::error ::TCP port not reachable (deploy skipped)"; exit 1;
+              fi
+            fi
             BRANCH="${GITHUB_REF##*/}"
             SAFE_BRANCH=${BRANCH//[^a-zA-Z0-9_-]/-}
             IMAGE="ghcr.io/${{ github.repository_owner }}/nilm-app:${SAFE_BRANCH}-latest"
