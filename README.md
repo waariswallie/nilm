@@ -94,6 +94,32 @@ Deze repo bevat nu beide workflows:
 
 Aanbevolen voor thuisnetwerk: gebruik het pull-model (self-hosted).
 
+### Quick Start (Self-hosted Pull Deploy)
+1. Haal registration token op: Repo → Settings → Actions → Runners → New self-hosted runner.
+2. Op de Pi (vereist curl + jq):
+  ```bash
+  sudo apt update && sudo apt install -y curl jq tar
+  ```
+3. Voer (vervang <TOKEN>):
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/waariswallie/nilm/init/scripts/setup_runner.sh -o setup_runner.sh
+  bash setup_runner.sh --repo waariswallie/nilm --token <TOKEN>
+  ```
+4. Controleer in GitHub dat de runner “online” staat.
+5. Push een commit of run workflow: “Deploy (Self-Hosted Pi Pull)”.
+6. Op de Pi verifiëren:
+  ```bash
+  docker ps | grep nilm-app
+  curl -s localhost:8001/health || curl -s localhost:8000/health
+  ```
+7. (Optioneel) Update `.env` in `~/nilm-<branch>` en herstart:
+  ```bash
+  cd ~/nilm-init && docker compose up -d
+  ```
+
+### Handmatig runner zonder script
+Zie eerdere sectie of gebruik GitHub UI instructies. Het script doet alleen: detect arch → download → config → service.
+
 ### Self-hosted runner installeren op de Pi
 Op de Pi:
 ```bash
@@ -104,7 +130,7 @@ tar xzf actions-runner.tar.gz
 sudo ./svc.sh install
 sudo ./svc.sh start
 ```
-Het registratie-token haal je via: GitHub Repo → Settings → Actions → Runners → New self-hosted runner.
+Het registratie-token haal je via: GitHub Repo → Settings → Actions → Runners → New self-hosted runner (of gebruik het `setup_runner.sh` script hierboven).
 
 Daarna zal de workflow `Deploy (Self-Hosted Pi Pull)` automatisch bij een push de container pullen en herstarten.
 
