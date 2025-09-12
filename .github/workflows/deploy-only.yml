@@ -1,0 +1,79 @@
+name: Deploy Existing Image (Raspberry Pi)
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch whose image to deploy (main or init)'
+        required: true
+        default: 'init'
+      port_override:
+        description: 'Optional host port (auto: main=8000, init=8001)'
+        required: false
+        default: ''
+
+jobs:
+  deploy_only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate required secrets
+        run: |
+          set -e
+          missing=0
+          for var in RPI_HOST RPI_USER RPI_SSH_KEY; do
+            if [ -z "${!var}" ]; then
+              echo "::error title=Missing secret::$var is not set (Settings > Secrets and variables > Actions)";
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            echo "Missing secrets. Aborting."; exit 1; fi
+        env:
+          RPI_HOST: ${{ secrets.RPI_HOST }}
+          RPI_USER: ${{ secrets.RPI_USER }}
+          RPI_SSH_KEY: ${{ secrets.RPI_SSH_KEY }}
+
+      - name: Deploy existing image over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+            host: ${{ secrets.RPI_HOST }}
+            username: ${{ secrets.RPI_USER }}
+            key: ${{ secrets.RPI_SSH_KEY }}
+            port: ${{ secrets.RPI_PORT }}
+            script: |
+              set -e
+              # Fallback port logic (if secret not set) – default to 22
+              if [ -z "${{ secrets.RPI_PORT }}" ]; then export RPI_PORT=22; fi
+              BRANCH="${{ github.event.inputs.branch }}"
+              SAFE_BRANCH=${BRANCH//[^a-zA-Z0-9_-]/-}
+              IMAGE="ghcr.io/${{ github.repository_owner }}/nilm-app:${SAFE_BRANCH}-latest"
+              # Derive port (allow override)
+              PORT_INPUT="${{ github.event.inputs.port_override }}"
+              if [ -n "$PORT_INPUT" ]; then
+                PORT="$PORT_INPUT"
+              else
+                PORT=8000; if [ "$BRANCH" = "init" ]; then PORT=8001; fi
+              fi
+              echo "Attempting to pull $IMAGE"
+              if ! docker pull "$IMAGE"; then
+                echo "::error ::Image $IMAGE not found. Run the build workflow first."; exit 1; fi
+              APP_DIR=~/nilm-$SAFE_BRANCH
+              mkdir -p "$APP_DIR"
+              cd "$APP_DIR"
+              COMPOSE_FILE=docker-compose.yml
+              printf "%s\n" \
+                "services:" \
+                "  nilm-app:" \
+                "    image: $IMAGE" \
+                "    container_name: nilm-app-$SAFE_BRANCH" \
+                "    restart: unless-stopped" \
+                "    env_file:" \
+                "      - .env" \
+                "    ports:" \
+                "      - $PORT:8000" > $COMPOSE_FILE
+              if [ ! -f .env ]; then echo "WARNING: .env missing (create one for config)"; fi
+              echo "Bringing stack up (branch=$BRANCH port=$PORT)"
+              docker compose down || true
+              docker compose up -d
+              docker ps --filter name=nilm-app-$SAFE_BRANCH
+              echo "Deploy finished." 
