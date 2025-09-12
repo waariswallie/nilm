@@ -1,4 +1,4 @@
-name: Build & Deploy (Raspberry Pi)
+name: Build (Image only)
 
 on:
   push:
@@ -46,82 +46,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.tags.outputs.TAGS }}
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    # Skip deploy if SKIP_DEPLOY secret is exactly '1'
-    if: ${{ secrets.SKIP_DEPLOY != '1' }}
-    steps:
-      - name: Validate required secrets
+      - name: Inspect pushed image (multi-arch manifest)
         run: |
-          set -e
-          missing=0
-          for var in RPI_HOST RPI_USER RPI_SSH_KEY; do
-            if [ -z "${!var}" ]; then
-              echo "::error title=Missing secret::$var is not set (Settings > Secrets and variables > Actions)";
-              missing=1
-            fi
-          done
-          if [ "$missing" -eq 1 ]; then
-            echo "One or more required secrets are missing. Aborting deploy.";
-            exit 1
-          fi
-        env:
-          RPI_HOST: ${{ secrets.RPI_HOST }}
-          RPI_USER: ${{ secrets.RPI_USER }}
-          RPI_SSH_KEY: ${{ secrets.RPI_SSH_KEY }}
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          # Required connection parameters (defined as repository secrets)
-          host: ${{ secrets.RPI_HOST }}
-          username: ${{ secrets.RPI_USER }}
-          key: ${{ secrets.RPI_SSH_KEY }}
-          # Optional: fallback to 22 if RPI_PORT not provided (handled in action by leaving blank -> defaults)
-          port: ${{ secrets.RPI_PORT }}
-          script: |
-            set -e
-            echo "Pre-flight: ping host"
-            if command -v ping >/dev/null 2>&1; then
-              if ! ping -c 2 -W 2 ${{ secrets.RPI_HOST }} >/dev/null 2>&1; then
-                echo "Host unreachable via ICMP; attempting SSH anyway...";
-              fi
-            fi
-            echo "Pre-flight: test SSH port"
-            if command -v nc >/dev/null 2>&1; then
-              PORT_CHECK="${{ secrets.RPI_PORT }}"; if [ -z "$PORT_CHECK" ]; then PORT_CHECK=22; fi
-              if ! nc -z -w3 ${{ secrets.RPI_HOST }} $PORT_CHECK; then
-                echo "::error ::TCP port not reachable (deploy skipped)"; exit 1;
-              fi
-            fi
-            BRANCH="${GITHUB_REF##*/}"
-            SAFE_BRANCH=${BRANCH//[^a-zA-Z0-9_-]/-}
-            IMAGE="ghcr.io/${{ github.repository_owner }}/nilm-app:${SAFE_BRANCH}-latest"
-            # Map branch to port (main=8000, init=8001 default)
-            PORT=8000
-            if [ "$BRANCH" = "init" ]; then PORT=8001; fi
-            APP_DIR=~/nilm-$SAFE_BRANCH
-            mkdir -p "$APP_DIR"
-            cd "$APP_DIR"
-            echo "Pull image $IMAGE"
-            docker pull "$IMAGE"
-            COMPOSE_FILE=docker-compose.yml
-            echo "Generate compose file ($COMPOSE_FILE)"
-            printf "%s\n" \
-              "services:" \
-              "  nilm-app:" \
-              "    image: $IMAGE" \
-              "    container_name: nilm-app-$SAFE_BRANCH" \
-              "    restart: unless-stopped" \
-              "    env_file:" \
-              "      - .env" \
-              "    ports:" \
-              "      - $PORT:8000" > $COMPOSE_FILE
-            if [ ! -f .env ]; then
-              echo "WARNING: .env missing in $APP_DIR (create it to configure).";
-            fi
-            echo "Deploy stack ($BRANCH)"
-            docker compose down || true
-            docker compose up -d
-            echo "Deployed branch $BRANCH on port $PORT"
+          echo "Inspecting manifest for branch $BRANCH_NAME ($SAFE_BRANCH)" 
+          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/nilm-app:${SAFE_BRANCH}-latest || echo "Manifest inspect failed (image may not have pushed)."

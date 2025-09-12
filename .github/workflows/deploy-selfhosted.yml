@@ -9,12 +9,17 @@ jobs:
   deploy:
     # Requires a self-hosted runner registered on the Pi with label 'pi'
     runs-on: [self-hosted, linux, arm64, pi]
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Show context
         run: |
           echo "Actor: $GITHUB_ACTOR"
           echo "Ref: $GITHUB_REF"
           echo "SHA: $GITHUB_SHA"
+          echo "Runner: $(uname -a)"
+          echo "Assuming public GHCR image (no auth)."
       - name: Determine image tag
         id: meta
         run: |
@@ -23,19 +28,6 @@ jobs:
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
           echo "safe_branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
           echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER}/nilm-app:${SAFE_BRANCH}-latest" >> $GITHUB_OUTPUT
-      - name: Docker login (GHCR)
-        run: |
-          set -e
-          # Non-interactive auth: write ~/.docker/config.json manually (works around TTY login issues)
-          TOKEN="$GITHUB_TOKEN"
-          if [ -z "$TOKEN" ]; then echo "::error ::Geen token beschikbaar voor GHCR authenticatie"; exit 1; fi
-          USER="$GITHUB_ACTOR"
-          echo "Schrijf Docker auth config voor gebruiker $USER"
-          mkdir -p ~/.docker
-          AUTH=$(printf "%s:%s" "$USER" "$TOKEN" | base64 | tr -d '\n\r')
-          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$AUTH" > ~/.docker/config.json
-          chmod 600 ~/.docker/config.json
-          echo "Auth config geschreven (geen interactieve login nodig)."
       - name: Pull & restart container
         run: |
           set -e
@@ -46,8 +38,8 @@ jobs:
           APP_DIR="$HOME/nilm-$SAFE_BRANCH"
           mkdir -p "$APP_DIR"
           cd "$APP_DIR"
-          echo "Pulling $IMAGE"
-          if ! docker pull "$IMAGE"; then echo "Image not found: $IMAGE"; exit 1; fi
+          echo "Pulling $IMAGE (public)"
+          docker pull "$IMAGE"
           COMPOSE_FILE=docker-compose.yml
           printf "%s\n" \
             "services:" \
