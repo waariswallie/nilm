@@ -50,8 +50,8 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    # Allow manual override to skip deploy (set SECRET SKIP_DEPLOY=1 or use workflow_dispatch input later)
-    if: ${{ !secrets.SKIP_DEPLOY || secrets.SKIP_DEPLOY != '1' }}
+    # Skip deploy if SKIP_DEPLOY secret is exactly '1'
+    if: ${{ secrets.SKIP_DEPLOY != '1' }}
     steps:
       - name: Validate required secrets
         run: |
@@ -78,8 +78,8 @@ jobs:
           host: ${{ secrets.RPI_HOST }}
           username: ${{ secrets.RPI_USER }}
           key: ${{ secrets.RPI_SSH_KEY }}
-          # Optional: fallback to 22 if RPI_PORT not provided
-          port: ${{ secrets.RPI_PORT || 22 }}
+          # Optional: fallback to 22 if RPI_PORT not provided (handled in action by leaving blank -> defaults)
+          port: ${{ secrets.RPI_PORT }}
           script: |
             set -e
             echo "Pre-flight: ping host"
@@ -90,7 +90,8 @@ jobs:
             fi
             echo "Pre-flight: test SSH port"
             if command -v nc >/dev/null 2>&1; then
-              if ! nc -z -w3 ${{ secrets.RPI_HOST }} ${{ secrets.RPI_PORT || 22 }}; then
+              PORT_CHECK="${{ secrets.RPI_PORT }}"; if [ -z "$PORT_CHECK" ]; then PORT_CHECK=22; fi
+              if ! nc -z -w3 ${{ secrets.RPI_HOST }} $PORT_CHECK; then
                 echo "::error ::TCP port not reachable (deploy skipped)"; exit 1;
               fi
             fi
