@@ -26,18 +26,16 @@ jobs:
       - name: Docker login (GHCR)
         run: |
           set -e
-          DOCKER_VERSION=$(docker version --format '{{.Client.Version}}' 2>/dev/null || true)
-          echo "Docker client version: $DOCKER_VERSION"
-          if docker login ghcr.io --help 2>&1 | grep -q -- '--password-stdin'; then
-            echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin || {
-              echo "Primary login method failed; retry without --password-stdin";
-              docker login ghcr.io -u "$GITHUB_ACTOR" -p "$GITHUB_TOKEN";
-            }
-          else
-            echo "--password-stdin not supported; using legacy -p option";
-            docker login ghcr.io -u "$GITHUB_ACTOR" -p "$GITHUB_TOKEN"
-          fi
-          echo "Login to GHCR succeeded"
+          # Non-interactive auth: write ~/.docker/config.json manually (works around TTY login issues)
+          TOKEN="$GITHUB_TOKEN"
+          if [ -z "$TOKEN" ]; then echo "::error ::Geen token beschikbaar voor GHCR authenticatie"; exit 1; fi
+          USER="$GITHUB_ACTOR"
+          echo "Schrijf Docker auth config voor gebruiker $USER"
+          mkdir -p ~/.docker
+          AUTH=$(printf "%s:%s" "$USER" "$TOKEN" | base64 | tr -d '\n\r')
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$AUTH" > ~/.docker/config.json
+          chmod 600 ~/.docker/config.json
+          echo "Auth config geschreven (geen interactieve login nodig)."
       - name: Pull & restart container
         run: |
           set -e
