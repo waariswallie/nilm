@@ -7,7 +7,7 @@ Doel: energieverbruik van individuele apparaten afleiden uit een totale (slimme 
 ## Inhoud
 1. Kern functionaliteit (oorspronkelijke playground)
 2. Nieuwe containerized pipeline (`app/`):
-   - Ingest MariaDB -> kW serie
+   - Ingest MariaDB -> kW series
    - Preprocessing / smoothing
    - Event detectie (step changes)
    - Clustering (DBSCAN) naar kandidaat apparaten
