@@ -1,0 +1,57 @@
+name: Deploy (Self-Hosted Pi Pull)
+
+on:
+  push:
+    branches: [ main, init ]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    # Requires a self-hosted runner registered on the Pi with label 'pi'
+    runs-on: [self-hosted, linux, arm64, pi]
+    steps:
+      - name: Show context
+        run: |
+          echo "Actor: $GITHUB_ACTOR"
+          echo "Ref: $GITHUB_REF"
+          echo "SHA: $GITHUB_SHA"
+      - name: Determine image tag
+        id: meta
+        run: |
+          BRANCH="${GITHUB_REF##*/}"
+          SAFE_BRANCH=${BRANCH//[^a-zA-Z0-9_-]/-}
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "safe_branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER}/nilm-app:${SAFE_BRANCH}-latest" >> $GITHUB_OUTPUT
+      - name: Docker login (GHCR)
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Pull & restart container
+        run: |
+          set -e
+          IMAGE="${{ steps.meta.outputs.image }}"
+          BRANCH="${{ steps.meta.outputs.branch }}"
+          SAFE_BRANCH="${{ steps.meta.outputs.safe_branch }}"
+          PORT=8000; if [ "$BRANCH" = "init" ]; then PORT=8001; fi
+          APP_DIR="$HOME/nilm-$SAFE_BRANCH"
+          mkdir -p "$APP_DIR"
+          cd "$APP_DIR"
+          echo "Pulling $IMAGE"
+          if ! docker pull "$IMAGE"; then echo "Image not found: $IMAGE"; exit 1; fi
+          COMPOSE_FILE=docker-compose.yml
+          printf "%s\n" \
+            "services:" \
+            "  nilm-app:" \
+            "    image: $IMAGE" \
+            "    container_name: nilm-app-$SAFE_BRANCH" \
+            "    restart: unless-stopped" \
+            "    env_file:" \
+            "      - .env" \
+            "    ports:" \
+            "      - $PORT:8000" > $COMPOSE_FILE
+          if [ ! -f .env ]; then echo "NOTE: create $APP_DIR/.env for config"; fi
+          echo "(Re)starting stack on port $PORT"
+          docker compose down || true
+          docker compose up -d
+          docker ps --filter name=nilm-app-$SAFE_BRANCH
+          echo "Done"

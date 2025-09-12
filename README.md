@@ -78,15 +78,43 @@ tests/
 - [ ] Export & rapportage endpoints
 
 ## CI/CD & Deploy (Raspberry Pi)
-Automatisch build & deploy bij push naar `main`:
+Automatisch build & deploy bij push naar `main` (en `init`).
 
-1. GitHub Actions workflow `deploy.yml` bouwt een multi-arch image (amd64 + arm64) en pusht naar GHCR `ghcr.io/<owner>/nilm-app:latest`.
-2. Tweede job maakt via SSH verbinding met je Raspberry Pi (bijv. `raspi52` op 192.168.0.70) en runt `docker compose up -d`.
+### Belangrijk over netwerk (timeout / i/o timeout)
+GitHub *gehoste* runners kunnen je interne LAN (192.168.x.x) meestal niet bereiken → `i/o timeout` bij de SSH stap. Twee oplossingen:
+
+| Methode | Beschrijving | Pro | Con |
+|--------|--------------|-----|-----|
+| Pull-model (self-hosted runner) | Raspberry Pi draait een self-hosted GitHub Actions runner en trekt zelf het image | Geen inbound poorten/openingen nodig | Runner onderhouden op de Pi |
+| Push via publiek bereikbare SSH | Pi publiek bereikbaar of via port-forward/VPN | Geen runner installatie | Netwerk/openbaarheid & security complexities |
+
+Deze repo bevat nu beide workflows:
+1. `deploy.yml` (build + SSH deploy) – werkt alleen als de GitHub runner de Pi kan bereiken.
+2. `deploy-selfhosted.yml` (pull) – vereist self-hosted runner labels: `self-hosted, linux, arm64, pi`.
+
+Aanbevolen voor thuisnetwerk: gebruik het pull-model (self-hosted).
+
+### Self-hosted runner installeren op de Pi
+Op de Pi:
+```bash
+mkdir -p ~/actions-runner && cd ~/actions-runner
+curl -o actions-runner.tar.gz -L https://github.com/actions/runner/releases/download/v2.321.0/actions-runner-linux-arm64-2.321.0.tar.gz
+tar xzf actions-runner.tar.gz
+./config.sh --url https://github.com/<YOUR_USER>/nilm --token <REG_TOKEN> --labels pi,arm64 --unattended
+sudo ./svc.sh install
+sudo ./svc.sh start
+```
+Het registratie-token haal je via: GitHub Repo → Settings → Actions → Runners → New self-hosted runner.
+
+Daarna zal de workflow `Deploy (Self-Hosted Pi Pull)` automatisch bij een push de container pullen en herstarten.
+
+### Bestaande SSH-gebaseerde deploy
+Werkt alleen als `RPI_HOST` vanaf internet (of GitHub) bereikbaar is. Voor de meeste thuisinstallaties niet het geval.
 
 ### Vereiste GitHub Secrets
 | Secret | Beschrijving |
 |--------|--------------|
-| `RPI_HOST` | IP of hostname (bv. 192.168.0.70) |
+| `RPI_HOST` | IP of hostname (alleen nodig voor SSH-model) |
 | `RPI_USER` | SSH user (bv. `pi`) |
 | `RPI_SSH_KEY` | Private key (PEM) zonder passphrase |
 | `RPI_PORT` | (optioneel) SSH poort, default 22 |
