@@ -17,6 +17,7 @@ class Settings(BaseModel):
     max_event_duration_min: int = int(os.getenv("MAX_EVENT_DURATION_MIN", 240))
 
     dbconnect_path: Path = Path("/run/secrets/dbconnect.conf")
+    mock_db: bool = bool(int(os.getenv("MOCK_DB", "0")))  # MOCK_DB=1 to use synthetic data
 
     def override_from_file(self):
         if self.dbconnect_path.exists():

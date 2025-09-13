@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Query
+from datetime import datetime, timezone
+from typing import Dict, Any
 from .config import settings
 from .db import fetch_minute_power
 from .preprocessing import clean_series
@@ -12,6 +14,30 @@ router = APIRouter()
 @router.get("/health")
 def health():
     return {"ok": True}
+
+
+@router.get("/status", summary="Lightweight status about data availability & config")
+def status() -> Dict[str, Any]:
+    try:
+        df = fetch_minute_power()
+        span = None
+        if not df.empty:
+            span = {
+                "from": df.index.min().isoformat(),
+                "to": df.index.max().isoformat(),
+                "minutes": int(len(df)),
+            }
+        detected_cols = [c for c in ["p1","p2","n1","n2","L1","L2","L3","Pnet"] if c in df.columns]
+        return {
+            "ok": True,
+            "mock_db": settings.mock_db,
+            "span": span,
+            "columns": detected_cols,
+            "threshold_watt": settings.event_watt_threshold,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc), "mock_db": settings.mock_db}
 
 
 @router.get("/scan")
