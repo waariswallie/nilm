@@ -140,6 +140,44 @@ Voorbeeld cron (elke 15 minuten check + update):
 
 Directory layout blijft hetzelfde: `/home/pi/docker/dev/nilm/<branch>`.
 
+### Volledige pipeline opnieuw draaien
+Je hebt drie opties om de build + deploy opnieuw te forceren:
+
+1. GitHub UI (workflow_dispatch)
+  - Ga naar Actions → "Build (Image only)" → Run workflow → kies branch
+  - Daarna automatisch "Deploy (Self-Hosted Pi Pull)" run (push niet nodig als je eerst een dummy commit doet).
+
+2. Dummy commit (triggervariant)
+  ```bash
+  echo "# touch" >> pipeline-trigger.txt
+  git add pipeline-trigger.txt
+  git commit -m "chore: trigger pipeline"
+  git push origin $(git rev-parse --abbrev-ref HEAD)
+  ```
+
+3. Lokaal multi-arch build & push (repliceert Actions)
+  - Vereist: buildx + login bij ghcr.io (`echo $GHCR_PAT | docker login ghcr.io -u <user> --password-stdin` indien private)
+  - Bash:
+    ```bash
+    chmod +x scripts/build-multiarch.sh
+    ./scripts/build-multiarch.sh --branch init
+    ```
+  - PowerShell:
+    ```powershell
+    ./scripts/build-multiarch.ps1 -Branch init
+    ```
+  - Daarna op Pi: workflow hoeft niet; run eventueel `scripts/deploy.sh --branch init --force`.
+
+Verificatie checklist:
+```
+docker pull ghcr.io/waariswallie/nilm-app:init-latest
+docker buildx imagetools inspect ghcr.io/waariswallie/nilm-app:init-latest | grep -E "Platform|Name"
+ssh pi@<host> docker ps --filter name=nilm-app-init
+curl -s http://<pi-ip>:8001/health
+```
+
+Indien digest niet wijzigt maar je wél wilt herstarten: `scripts/deploy.sh --branch init --force`.
+
 ### Handmatig runner zonder script
 Zie eerdere sectie of gebruik GitHub UI instructies. Het script doet alleen: detect arch → download → config → service.
 
