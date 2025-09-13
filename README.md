@@ -112,10 +112,33 @@ Aanbevolen voor thuisnetwerk: gebruik het pull-model (self-hosted).
   docker ps | grep nilm-app
   curl -s localhost:8001/health || curl -s localhost:8000/health
   ```
-7. (Optioneel) Update `.env` in `~/nilm-<branch>` en herstart:
+7. (Optioneel) Update `.env` in `/home/pi/docker/dev/nilm/<branch>` en herstart:
   ```bash
-  cd ~/nilm-init && docker compose up -d
+  cd /home/pi/docker/dev/nilm/init && docker compose up -d
   ```
+
+### Standalone deploy script
+Je kunt buiten GitHub Actions om handmatig (of via cron) updaten met het script:
+
+```
+scripts/deploy.sh --branch init
+```
+
+Opties:
+```
+--branch <naam>   (default: init)
+--force           Forceer herstart ook als digest gelijk is
+--port <poort>    Overschrijft standaard poort mapping
+--image <ref>     Gebruik custom image ref (anders ghcr.io/<owner>/nilm-app:<branch>-latest)
+--prune           Prune dangling images na deploy
+```
+
+Voorbeeld cron (elke 15 minuten check + update):
+```
+*/15 * * * * /home/pi/docker/dev/nilm/scripts/deploy.sh --branch init >> /var/log/nilm-init.log 2>&1
+```
+
+Directory layout blijft hetzelfde: `/home/pi/docker/dev/nilm/<branch>`.
 
 ### Handmatig runner zonder script
 Zie eerdere sectie of gebruik GitHub UI instructies. Het script doet alleen: detect arch → download → config → service.
@@ -145,16 +168,29 @@ Werkt alleen als `RPI_HOST` vanaf internet (of GitHub) bereikbaar is. Voor de me
 | `RPI_SSH_KEY` | Private key (PEM) zonder passphrase |
 | `RPI_PORT` | (optioneel) SSH poort, default 22 |
 
+### Directory layout (self-hosted)
+```
+/home/pi/docker/dev/nilm/
+  main/
+    docker-compose.yml
+    .env
+  init/
+    docker-compose.yml
+    .env
+```
+
+De workflow maakt (indien nog niet aanwezig):
+- Branch subdirectory
+- `docker-compose.yml`
+- Placeholder `.env` (met instructieregels) – pas deze aan voor DB / configuratie.
+
 ### Voorbereiden Raspberry Pi
 ```bash
 sudo apt update && sudo apt install -y docker.io docker-compose-plugin
 sudo usermod -aG docker $USER
-mkdir -p ~/nilm
-cd ~/nilm
-cp /path/naar/.env .env   # vul env variabelen
-```
-
-Eerste deploy maakt automatisch een eenvoudige `docker-compose.yml` indien niet aanwezig.
+mkdir -p /home/pi/docker/dev/nilm
+``` 
+Eerste self-hosted deploy vult de submap.
 
 ### Handmatig herstarten
 ```bash
