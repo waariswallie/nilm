@@ -28,6 +28,7 @@ PORT_OVERRIDE=""
 FORCE=false
 PRUNE=false
 CUSTOM_IMAGE=""
+REPO_SRC_DIR=$(pwd)  # directory waar script is gestart (checkout root)
 
 log() { echo -e "[nilm-deploy] $*"; }
 warn() { echo -e "\e[33m[nilm-deploy][warn]\e[0m $*"; }
@@ -51,15 +52,30 @@ Exit codes:
   20 compose failed
 EOF
 }
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --branch) BRANCH="$2"; shift 2;;
-    --image) CUSTOM_IMAGE="$2"; shift 2;;
-    --port) PORT_OVERRIDE="$2"; shift 2;;
-    --force) FORCE=true; shift;;
-    --prune) PRUNE=true; shift;;
-    -h|--help) usage; exit 0;;
+  # Probeer sample kopie te maken
+  if [[ -f "$REPO_SRC_DIR/.env.sample" ]]; then
+    log "Kopieer .env.sample naar .env (pas credentials aan!)"
+    cp "$REPO_SRC_DIR/.env.sample" .env
+    # Zorg dat verplichte basiskeys bestaan (zonder overschrijven indien sample ze had)
+    grep -q '^APP_ENV=' .env || echo 'APP_ENV=prod' >> .env
+    grep -q '^LOG_LEVEL=' .env || echo 'LOG_LEVEL=info' >> .env
+  else
+    log "Maak placeholder .env (geen .env.sample gevonden)"
+    cat > .env <<ENV
+APP_ENV=prod
+LOG_LEVEL=info
+# DB_HOST=...
+# DB_USER=...
+# DB_PASS=...
+ENV
+  fi
+else
+  # .env bestaat; check of DB_HOST ontbreekt en sample beschikbaar is
+  if ! grep -q '^DB_HOST=' .env && [[ -f "$REPO_SRC_DIR/.env.sample" ]]; then
+    log "Append DB_* vars uit .env.sample (DB_HOST ontbrak)"
+    grep '^DB_' "$REPO_SRC_DIR/.env.sample" >> .env || true
+  fi
+fi
     *) err "Onbekende optie: $1"; usage; exit 1;;
   esac
 done
