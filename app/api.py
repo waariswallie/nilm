@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Query
+import os
 from datetime import datetime, timezone
 from typing import Dict, Any
 from .config import settings
@@ -31,9 +32,12 @@ def status() -> Dict[str, Any]:
         return {
             "ok": True,
             "mock_db": settings.mock_db,
+            "db_host": settings.db_host,
+            "db_name": settings.db_name,
             "span": span,
             "columns": detected_cols,
             "threshold_watt": settings.event_watt_threshold,
+            "git_sha": os.getenv("APP_GIT_SHA", "unknown"),
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as exc:  # noqa: BLE001

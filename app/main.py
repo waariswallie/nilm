@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
+import os
 from .api import router
 
 app = FastAPI(title="NILM Pipeline")
@@ -20,4 +21,5 @@ def root(index: bool = False):
 		"description": "Event-based NILM pipeline (minute data, step events, clustering)",
 		"endpoints": ["/health", "/scan", "/docs"],
 		"docs": "/docs",
+		"git_sha": os.getenv("APP_GIT_SHA", "unknown"),
 	}

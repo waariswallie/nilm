@@ -78,7 +78,7 @@ tests/
 - [ ] Export & rapportage endpoints
 
 ## CI/CD & Deploy (Raspberry Pi)
-Automatisch build & deploy bij push naar `main` (en `init`).
+Volledig automatische build & deploy bij iedere push naar `main` of `init` via één workflow: **Build and Deploy (Unified)**.
 
 ### Belangrijk over netwerk (timeout / i/o timeout)
 GitHub *gehoste* runners kunnen je interne LAN (192.168.x.x) meestal niet bereiken → `i/o timeout` bij de SSH stap. Twee oplossingen:
@@ -88,34 +88,16 @@ GitHub *gehoste* runners kunnen je interne LAN (192.168.x.x) meestal niet bereik
 | Pull-model (self-hosted runner) | Raspberry Pi draait een self-hosted GitHub Actions runner en trekt zelf het image | Geen inbound poorten/openingen nodig | Runner onderhouden op de Pi |
 | Push via publiek bereikbare SSH | Pi publiek bereikbaar of via port-forward/VPN | Geen runner installatie | Netwerk/openbaarheid & security complexities |
 
-Deze repo bevat nu beide workflows:
-1. `deploy.yml` (build + SSH deploy) – werkt alleen als de GitHub runner de Pi kan bereiken.
-2. `deploy-selfhosted.yml` (pull) – vereist self-hosted runner labels: `self-hosted, linux, arm64, pi`.
+Workflow stappen (samengevat):
+1. Build (multi-arch amd64/arm64) → push naar GHCR (`:<branch>-latest` + `:<branch>-<sha7>`)
+2. Self‑hosted Pi runner forceert direct een redeploy met `scripts/deploy.sh --force`
+3. Container start opnieuw (ongeacht digest) → `/status` toont nieuwe `git_sha`
 
-Aanbevolen voor thuisnetwerk: gebruik het pull-model (self-hosted).
-
-### Quick Start (Self-hosted Pull Deploy)
-1. Haal registration token op: Repo → Settings → Actions → Runners → New self-hosted runner.
-2. Op de Pi (vereist curl + jq):
-  ```bash
-  sudo apt update && sudo apt install -y curl jq tar
-  ```
-3. Voer (vervang <TOKEN>):
-  ```bash
-  curl -fsSL https://raw.githubusercontent.com/waariswallie/nilm/init/scripts/setup_runner.sh -o setup_runner.sh
-  bash setup_runner.sh --repo waariswallie/nilm --token <TOKEN>
-  ```
-4. Controleer in GitHub dat de runner “online” staat.
-5. Push een commit of run workflow: “Deploy (Self-Hosted Pi Pull)”.
-6. Op de Pi verifiëren:
-  ```bash
-  docker ps | grep nilm-app
-  curl -s localhost:8001/health || curl -s localhost:8000/health
-  ```
-7. (Optioneel) Update `.env` in `/home/pi/docker/dev/nilm/<branch>` en herstart:
-  ```bash
-  cd /home/pi/docker/dev/nilm/init && docker compose up -d
-  ```
+### Quick Start (eerste keer self-hosted runner)
+1. Registration token: Repo → Settings → Actions → Runners → New self-hosted runner.
+2. Op de Pi installeer runner + docker (zie onder). Zorg dat labels o.a. `pi` bevatten.
+3. Push een commit → workflow bouwt & deployt.
+4. Controle: `curl -s http://<pi-ip>:8001/status | jq .git_sha`
 
 ### Standalone deploy script
 Je kunt buiten GitHub Actions om handmatig (of via cron) updaten met het script:
@@ -140,33 +122,12 @@ Voorbeeld cron (elke 15 minuten check + update):
 
 Directory layout blijft hetzelfde: `/home/pi/docker/dev/nilm/<branch>`.
 
-### Volledige pipeline opnieuw draaien
-Je hebt drie opties om de build + deploy opnieuw te forceren:
-
-1. GitHub UI (workflow_dispatch)
-  - Ga naar Actions → "Build (Image only)" → Run workflow → kies branch
-  - Daarna automatisch "Deploy (Self-Hosted Pi Pull)" run (push niet nodig als je eerst een dummy commit doet).
-
-2. Dummy commit (triggervariant)
-  ```bash
-  echo "# touch" >> pipeline-trigger.txt
-  git add pipeline-trigger.txt
-  git commit -m "chore: trigger pipeline"
-  git push origin $(git rev-parse --abbrev-ref HEAD)
-  ```
-
-3. Lokaal multi-arch build & push (repliceert Actions)
-  - Vereist: buildx + login bij ghcr.io (`echo $GHCR_PAT | docker login ghcr.io -u <user> --password-stdin` indien private)
-  - Bash:
-    ```bash
-    chmod +x scripts/build-multiarch.sh
-    ./scripts/build-multiarch.sh --branch init
-    ```
-  - PowerShell:
-    ```powershell
-    ./scripts/build-multiarch.ps1 -Branch init
-    ```
-  - Daarna op Pi: workflow hoeft niet; run eventueel `scripts/deploy.sh --branch init --force`.
+### Force / handmatig triggers
+Normaal niet nodig. Opties als je echt wilt:
+1. UI: Run workflow (workflow_dispatch)
+2. Dummy commit push
+3. Handmatig script: `scripts/deploy.sh --branch init --force`
+4. Lokaal multi-arch build & push; daarna script draaien
 
 Verificatie checklist:
 ```
@@ -176,7 +137,7 @@ ssh pi@<host> docker ps --filter name=nilm-app-init
 curl -s http://<pi-ip>:8001/health
 ```
 
-Indien digest niet wijzigt maar je wél wilt herstarten: `scripts/deploy.sh --branch init --force`.
+Alle redeploys zijn forced (digest wordt genegeerd) in de unified workflow.
 
 ### Handmatig runner zonder script
 Zie eerdere sectie of gebruik GitHub UI instructies. Het script doet alleen: detect arch → download → config → service.
@@ -247,3 +208,21 @@ ssh pi@192.168.0.70 "cd ~/nilm && docker compose pull && docker compose up -d"
 
 ## Licentie
 MIT (placeholder)
+
+## Data API
+
+| Endpoint | Doel | Belangrijkste velden |
+|----------|------|----------------------|
+| `/health` | Liveness | `{ok:true}` |
+| `/status` | Basis info + kolommen + span | `mock_db`, `span` |
+| `/scan` | Gecombineerde scan (laatste events + baseload) | `n_points`, `n_events`, `baseload`, `events` |
+| `/series` | Pnet tijdreeks (optioneel downsample) | `timestamps[]`, `pnet_kW[]`, `points` |
+| `/events` | Event lijst (limit param) | `count`, `events[]` |
+| `/clusters` | Cluster samenvatting | `clusters[]` |
+
+Voorbeelden:
+```bash
+curl -s "http://localhost:8000/series?last_days=2&downsample=5" | jq '.points'
+curl -s "http://localhost:8000/events?last_days=2&limit=20" | jq '.count'
+curl -s "http://localhost:8000/clusters" | jq
+```

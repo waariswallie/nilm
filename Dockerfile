@@ -12,6 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+ARG GIT_SHA=local-dev
+ENV APP_GIT_SHA=$GIT_SHA
+
 # Install poetry & deps first (layer cache) without requiring package source code
 COPY pyproject.toml /app/pyproject.toml
 RUN pip install --upgrade pip \

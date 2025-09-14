@@ -1,0 +1,79 @@
+name: Build and Deploy (Unified)
+
+on:
+  push:
+    branches: [ main, init ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      safe_branch: ${{ steps.tags.outputs.SAFE_BRANCH }}
+      image_latest: ${{ steps.tags.outputs.IMAGE_LATEST }}
+      image_versioned: ${{ steps.tags.outputs.IMAGE_VERSIONED }}
+      sha_short: ${{ steps.meta.outputs.VERSION }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,amd64
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract version
+        id: meta
+        run: echo "VERSION=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+      - name: Compute tags
+        id: tags
+        run: |
+          BRANCH="${GITHUB_REF##*/}"
+          SAFE_BRANCH=${BRANCH//[^a-zA-Z0-9_-]/-}
+          IMAGE_BASE=ghcr.io/${{ github.repository_owner }}/nilm-app
+          echo "SAFE_BRANCH=$SAFE_BRANCH" >> $GITHUB_OUTPUT
+          echo "IMAGE_LATEST=$IMAGE_BASE:${SAFE_BRANCH}-latest" >> $GITHUB_OUTPUT
+          echo "IMAGE_VERSIONED=$IMAGE_BASE:${SAFE_BRANCH}-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          echo "TAGS=$IMAGE_BASE:${SAFE_BRANCH}-latest,$IMAGE_BASE:${SAFE_BRANCH}-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+      - name: Build & Push (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          tags: ${{ steps.tags.outputs.TAGS }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+      - name: Inspect manifest
+        run: docker buildx imagetools inspect ${{ steps.tags.outputs.IMAGE_LATEST }} || true
+
+  deploy:
+    runs-on: [self-hosted, linux, arm64, pi]
+    needs: build
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Deploy via deploy.sh (forced)
+        run: |
+          set -euo pipefail
+          chmod +x scripts/deploy.sh
+          ./scripts/deploy.sh --branch "${{ needs.build.outputs.safe_branch }}" --force
+      - name: Show running container
+        run: docker ps --filter name=nilm-app-${{ needs.build.outputs.safe_branch }} || true

@@ -3,11 +3,15 @@ name: Deploy (Self-Hosted Pi Pull)
 on:
   push:
     branches: [ main, init ]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force redeploy (ignore digest check)'
+        required: false
+        default: 'false'
 
 jobs:
   deploy:
-    # Requires a self-hosted runner registered on the Pi with label 'pi'
     runs-on: [self-hosted, linux, arm64, pi]
     permissions:
       contents: read
@@ -19,56 +23,30 @@ jobs:
           echo "Ref: $GITHUB_REF"
           echo "SHA: $GITHUB_SHA"
           echo "Runner: $(uname -a)"
-          echo "Assuming public GHCR image (no auth)."
-      - name: Determine image tag
+          echo "Commit message (first line):"; git log -1 --pretty=%s || true
+      - name: Checkout repo (for deploy.sh)
+        uses: actions/checkout@v4
+      - name: Determine deploy flags
         id: meta
+        shell: bash
         run: |
-          BRANCH="${GITHUB_REF##*/}"
-          SAFE_BRANCH=${BRANCH//[^a-zA-Z0-9_-]/-}
-          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-          echo "safe_branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
-          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER}/nilm-app:${SAFE_BRANCH}-latest" >> $GITHUB_OUTPUT
-      - name: Pull & restart container
+          BRANCH="${GITHUB_REF##*/}"; echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          FORCE_INPUT="${{ github.event.inputs.force }}"
+          COMMIT_MSG=$(git log -1 --pretty=%B | tr -d '\r')
+          FORCE_FLAG="false"
+          if echo "$COMMIT_MSG" | grep -qi '\[force-deploy\]'; then FORCE_FLAG="true"; fi
+          if [ "$FORCE_INPUT" = "true" ]; then FORCE_FLAG="true"; fi
+          echo "force=$FORCE_FLAG" >> $GITHUB_OUTPUT
+          echo "Force flag resolved to: $FORCE_FLAG"
+      - name: Run deploy.sh on Pi runner
+        shell: bash
         run: |
-          set -e
-          IMAGE="${{ steps.meta.outputs.image }}"
-          BRANCH="${{ steps.meta.outputs.branch }}"
-          SAFE_BRANCH="${{ steps.meta.outputs.safe_branch }}"
-          PORT=8000; if [ "$BRANCH" = "init" ]; then PORT=8001; fi
-          BASE_DIR="/home/pi/docker/dev/nilm"
-          APP_DIR="$BASE_DIR/$SAFE_BRANCH"
-          mkdir -p "$APP_DIR"
-          cd "$APP_DIR"
-          echo "Base dir: $BASE_DIR"; echo "App dir: $APP_DIR";
-          echo "Pulling (updating manifest) $IMAGE"
-          # Capture old digest (if exists)
-          OLD_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' nilm-app-$SAFE_BRANCH 2>/dev/null || true)
-          docker pull "$IMAGE" >/tmp/pull.log 2>&1 || { echo "Pull failed:"; cat /tmp/pull.log; exit 1; }
-          NEW_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE" 2>/dev/null || true)
-          if [ -n "$OLD_DIGEST" ] && [ "$OLD_DIGEST" = "$NEW_DIGEST" ]; then
-             echo "Image digest on host is al up-to-date ($NEW_DIGEST). Skipping restart.";
-             exit 0;
-          fi
-          COMPOSE_FILE=docker-compose.yml
-          printf "%s\n" \
-            "services:" \
-            "  nilm-app:" \
-            "    image: $IMAGE" \
-            "    container_name: nilm-app-$SAFE_BRANCH" \
-            "    restart: unless-stopped" \
-            "    env_file:" \
-            "      - .env" \
-            "    ports:" \
-            "      - $PORT:8000" > $COMPOSE_FILE
-          if [ ! -f .env ]; then
-             echo "APP_ENV=prod" > .env
-             echo "LOG_LEVEL=info" >> .env
-             echo "# Voeg je DB settings hier toe (bijv. DB_HOST=, DB_USER=, DB_PASS=)" >> .env
-             echo "Created placeholder .env in $APP_DIR";
-          fi
-          echo "(Re)starting stack on port $PORT"
-          docker compose down || true
-          docker compose up -d
-          docker ps --filter name=nilm-app-$SAFE_BRANCH
-          echo "Deployed digest: $NEW_DIGEST"
-          echo "Done"
+          set -euo pipefail
+          chmod +x scripts/deploy.sh
+          CMD=("./scripts/deploy.sh" "--branch" "${{ steps.meta.outputs.branch }}")
+          if [ "${{ steps.meta.outputs.force }}" = "true" ]; then CMD+=("--force"); fi
+          echo "Run: ${CMD[*]}"
+          "${CMD[@]}"
+      - name: Show running containers
+        run: |
+          docker ps --filter name=nilm-app-${{ steps.meta.outputs.branch }} || true
