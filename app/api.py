@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any
 from .config import settings
 from .db import fetch_minute_power
@@ -55,8 +55,11 @@ def status() -> Dict[str, Any]:
 
 
 @router.get("/scan")
-def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=365)):
-    df = fetch_minute_power()
+def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
+    # Limit fetch to last N days to reduce load
+    start_dt = datetime.utcnow() - timedelta(days=last_days)
+    start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
+    df = fetch_minute_power(start_ts=start_iso)
     df["Pnet"] = clean_series(df["Pnet"])  # basic denoise
 
     evts = detect_events(
@@ -71,6 +74,9 @@ def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=365)):
 
     base = nightly_baseload(df)
     return {
+        "lookback_days": last_days,
+        "from": df.index.min().isoformat() if not df.empty else None,
+        "to": df.index.max().isoformat() if not df.empty else None,
         "n_points": int(len(df)),
         "n_events": int(len(ef)),
         "baseload": base.tail(14).to_dict(),

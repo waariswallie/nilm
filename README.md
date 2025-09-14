@@ -23,6 +23,36 @@ EXPORT_COLS=exp1,exp2
 PHASE_KWH_COLS=
 ```
 
+### Performance & prioriteit
+
+Je kunt het CPU scheduling gedrag van het proces tunen (Linux/RPi):
+
+| Variabele | Betekenis | Voorbeeld |
+|-----------|-----------|-----------|
+| `NICE_LEVEL` | Gewenste nice waarde (relatief lager = hogere prioriteit, vereist rechten voor negatieve waarden) | `-5` |
+| `CPU_AFFINITY` | Komma lijst van CPU core IDs waarop de app mag draaien | `0,1` |
+
+Voorbeeld:
+```
+NICE_LEVEL=-5
+CPU_AFFINITY=2,3
+```
+
+Overige optimalisaties:
+1. Beperk dataset: verlaag `LOOKBACK_DAYS` of implementeer incrementiële fetch (future: cache layer).
+2. Indexeer je tabel: `CREATE INDEX idx_meter_time ON meterstanden(time);`
+3. Alleen benodigde kolommen ophalen (nu al dynamisch via env mapping).
+4. Draai container met hogere CPU share: in `docker-compose.yml` services.nilm: `cpu_shares: 2048`.
+5. I/O scheduling: start container met `--device-read-bps` / `--device-write-bps` indien nodig of gebruik `ionice` wrapper.
+6. Meerdere workers: `UVICORN_WORKERS=2` bij CPU-bound clustering; voor nu 1 is voldoende.
+
+### Beperken van data (snellere start)
+Endpoint `/scan` haalt standaard alleen de laatste 7 dagen op (instelbaar via query parameter `last_days` max 30). Voorbeeld:
+```
+GET /scan?last_days=5
+```
+Gebruik `LOOKBACK_DAYS` in `.env` om de default te wijzigen.
+
 # NILM
 
 Non-Intrusive Load Monitoring (NILM) toolkit / playground + een uitbreidbare event-based pipeline met FastAPI & clustering.

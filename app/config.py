@@ -44,6 +44,20 @@ class Settings(BaseModel):
     consume_cols: str = os.getenv("CONSUME_COLS", "p1,p2")
     export_cols: str = os.getenv("EXPORT_COLS", "n1,n2")
     phase_kwh_cols: str = os.getenv("PHASE_KWH_COLS", "L1_kwh,L2_kwh,L3_kwh")
+    
+    # Performance / scheduling
+    @staticmethod
+    def _int_env(name: str) -> int | None:
+        val = os.getenv(name)
+        if val is None or val == "":
+            return None
+        try:
+            return int(val)
+        except ValueError:
+            return None
+
+    nice_level: int | None = _int_env.__func__("NICE_LEVEL")  # type: ignore[attr-defined]
+    cpu_affinity: str | None = os.getenv("CPU_AFFINITY")  # e.g. "0,1"
 
     lookback_days: int = int(os.getenv("LOOKBACK_DAYS", 7))
     event_watt_threshold: float = float(os.getenv("EVENT_WATT_THRESHOLD", 500))
