@@ -99,10 +99,9 @@ def fetch_minute_power(start_ts: str | None = None, end_ts: str | None = None) -
         try:
             q = build_query(include_phase=True)
             df = pd.read_sql(q, c, params=params)
-        except mysql_errors.ProgrammingError as e:
+        except Exception as e:  # noqa: BLE001 broad to catch pandas DatabaseError wrap
             msg = str(e)
             if 'Unknown column' in msg and phase_cols:
-                # retry without phase columns
                 attempt_phase = False
                 q = build_query(include_phase=False)
                 df = pd.read_sql(q, c, params=params)
@@ -117,7 +116,15 @@ def _postprocess_frame(df: pd.DataFrame, consume_cols: list[str] | None = None,
     if df.empty:
         return df.set_index(pd.to_datetime([]))
 
-    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce").dt.tz_convert("Europe/Amsterdam")
+    # Ensure tz-aware Europe/Amsterdam; handle already tz-aware values
+    ts_series = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    if isinstance(ts_series, pd.Series):
+        try:
+            ts_series = ts_series.dt.tz_convert("Europe/Amsterdam")
+        except Exception:  # noqa: BLE001
+            # If not tz-aware, localize first
+            ts_series = ts_series.dt.tz_localize("UTC").dt.tz_convert("Europe/Amsterdam")
+    df["ts"] = ts_series
     df = df.dropna(subset=["ts"]).set_index("ts").sort_index()
 
     consume_cols = consume_cols or [c for c in ["p1", "p2"] if c in df.columns]
