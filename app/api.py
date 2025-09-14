@@ -41,7 +41,17 @@ def status() -> Dict[str, Any]:
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc), "mock_db": settings.mock_db}
+        return {
+            "ok": False,
+            "error": str(exc),
+            "mock_db": settings.mock_db,
+            "db_host": settings.db_host,
+            "db_name": settings.db_name,
+            "table": settings.table_name,
+            "consume_cols": settings.consume_cols,
+            "export_cols": settings.export_cols,
+            "phase_kwh_cols": settings.phase_kwh_cols,
+        }
 
 
 @router.get("/scan")

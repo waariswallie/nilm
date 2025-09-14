@@ -38,6 +38,13 @@ class Settings(BaseModel):
     db_user: str = os.getenv("DB_USER", "root")
     db_pass: str = os.getenv("DB_PASS", "")
 
+    # Flexible schema mapping (comma separated lists)
+    table_name: str = os.getenv("TABLE_NAME", "meterstanden")
+    time_column: str = os.getenv("TIME_COLUMN", "time")
+    consume_cols: str = os.getenv("CONSUME_COLS", "p1,p2")
+    export_cols: str = os.getenv("EXPORT_COLS", "n1,n2")
+    phase_kwh_cols: str = os.getenv("PHASE_KWH_COLS", "L1_kwh,L2_kwh,L3_kwh")
+
     lookback_days: int = int(os.getenv("LOOKBACK_DAYS", 7))
     event_watt_threshold: float = float(os.getenv("EVENT_WATT_THRESHOLD", 500))
     min_event_duration_min: int = int(os.getenv("MIN_EVENT_DURATION_MIN", 2))

@@ -3,6 +3,7 @@ import os
 import math
 import random
 import mysql.connector as mysql
+from mysql.connector import errors as mysql_errors
 import pandas as pd
 from .config import settings
 
@@ -62,26 +63,92 @@ def _synthetic_cumulative(days: int) -> pd.DataFrame:
 
 
 def fetch_minute_power(start_ts: str | None = None, end_ts: str | None = None) -> pd.DataFrame:
-    """Fetch cumulative meter readings and convert to power (kW).
+    """Fetch cumulative meter readings and convert to instantaneous (average kW/min) power.
 
-    If MOCK_DB=1 (settings.mock_db) a synthetic dataset is returned instead of querying MariaDB.
+    Supports flexible column names via env:
+      TABLE_NAME, TIME_COLUMN, CONSUME_COLS, EXPORT_COLS, PHASE_KWH_COLS
+    Falls back by stripping phase columns if they are missing.
     """
     if settings.mock_db:
-        days = settings.lookback_days
-        df = _synthetic_cumulative(days)
-    else:
-        q = """
+        return _synthetic_cumulative(settings.lookback_days).pipe(_postprocess_frame)
+
+    consume_cols = [c.strip() for c in settings.consume_cols.split(',') if c.strip()]
+    export_cols = [c.strip() for c in settings.export_cols.split(',') if c.strip()]
+    phase_cols = [c.strip() for c in settings.phase_kwh_cols.split(',') if c.strip()]
+
+    # Build select list
+    def build_query(include_phase: bool) -> str:
+        cols = [settings.time_column + " as ts"]
+        cols += consume_cols
+        cols += export_cols
+        if include_phase and phase_cols:
+            cols += phase_cols
+        col_sql = ",\n          ".join(cols)
+        return f"""
         SELECT
-          time as ts,
-          p1, p2, n1, n2,
-          L1_kwh, L2_kwh, L3_kwh
-        FROM meterstanden
-        WHERE (%(start)s IS NULL OR time >= %(start)s)
-          AND (%(end)s   IS NULL OR time <  %(end)s)
-        ORDER BY time
+          {col_sql}
+        FROM {settings.table_name}
+        WHERE (%(start)s IS NULL OR {settings.time_column} >= %(start)s)
+          AND (%(end)s   IS NULL OR {settings.time_column} <  %(end)s)
+        ORDER BY {settings.time_column}
         """
-        with conn() as c:
-            df = pd.read_sql(q, c, params={"start": start_ts, "end": end_ts})
+
+    params = {"start": start_ts, "end": end_ts}
+    attempt_phase = True
+    with conn() as c:
+        try:
+            q = build_query(include_phase=True)
+            df = pd.read_sql(q, c, params=params)
+        except mysql_errors.ProgrammingError as e:
+            msg = str(e)
+            if 'Unknown column' in msg and phase_cols:
+                # retry without phase columns
+                attempt_phase = False
+                q = build_query(include_phase=False)
+                df = pd.read_sql(q, c, params=params)
+            else:
+                raise
+
+    return _postprocess_frame(df, consume_cols, export_cols, phase_cols if attempt_phase else [])
+
+
+def _postprocess_frame(df: pd.DataFrame, consume_cols: list[str] | None = None,
+                       export_cols: list[str] | None = None, phase_cols: list[str] | None = None) -> pd.DataFrame:
+    if df.empty:
+        return df.set_index(pd.to_datetime([]))
+
+    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce").dt.tz_convert("Europe/Amsterdam")
+    df = df.dropna(subset=["ts"]).set_index("ts").sort_index()
+
+    consume_cols = consume_cols or [c for c in ["p1", "p2"] if c in df.columns]
+    export_cols = export_cols or [c for c in ["n1", "n2"] if c in df.columns]
+    phase_cols = phase_cols or []
+
+    # Cast numeric
+    for col in list(df.columns):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Compute sums of diffs*60 (kWh -> kW)
+    def diff_sum(cols):
+        if not cols:
+            return pd.Series(0.0, index=df.index)
+        acc = None
+        for c in cols:
+            if c in df.columns:
+                series = df[c].diff().fillna(0) * 60.0
+                acc = series if acc is None else (acc + series)
+        return acc if acc is not None else pd.Series(0.0, index=df.index)
+
+    df["Pin"] = diff_sum(consume_cols)
+    df["Pout"] = diff_sum(export_cols)
+
+    for ph in phase_cols:
+        if ph in df.columns:
+            name = ph.replace('_kwh', '').replace('_KWH', '')
+            df[name] = df[ph].diff().fillna(0) * 60.0
+
+    df["Pnet"] = (df["Pin"] - df["Pout"]).clip(lower=-10, upper=15)
+    return df
 
     df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce").dt.tz_convert("Europe/Amsterdam")
     df = df.dropna(subset=["ts"]).set_index("ts").sort_index()

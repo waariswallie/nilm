@@ -1,3 +1,28 @@
+### Database kolom mapping (env vars)
+Je kunt afwijkende kolomnamen configureren zonder codewijziging:
+
+| Variabele | Default | Betekenis |
+|-----------|---------|-----------|
+| `TABLE_NAME` | meterstanden | Tabel met cumulatieve standen |
+| `TIME_COLUMN` | time | Tijdstempel kolom |
+| `CONSUME_COLS` | p1,p2 | Cumulatieve kWh import kolommen |
+| `EXPORT_COLS` | n1,n2 | Cumulatieve kWh export kolommen |
+| `PHASE_KWH_COLS` | L1_kwh,L2_kwh,L3_kwh | Per-fase kWh kolommen (optioneel) |
+
+Ontbreken fase kolommen → automatische fallback (query opnieuw zonder deze kolommen).
+Voorbeeld `.env` fragment:
+```
+DB_HOST=192.168.0.70
+DB_USER=nilm
+DB_PASS=SterkPass!
+DB_NAME=energy
+TABLE_NAME=meterstanden
+TIME_COLUMN=ts
+CONSUME_COLS=cons1,cons2
+EXPORT_COLS=exp1,exp2
+PHASE_KWH_COLS=
+```
+
 # NILM
 
 Non-Intrusive Load Monitoring (NILM) toolkit / playground + een uitbreidbare event-based pipeline met FastAPI & clustering.
