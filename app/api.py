@@ -8,6 +8,7 @@ from .preprocessing import clean_series
 from .events import detect_events
 from .clustering import build_event_frame, cluster_events
 from .baseload import nightly_baseload
+import numpy as np
 
 router = APIRouter()
 
@@ -73,12 +74,26 @@ def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
         ef = cluster_events(ef)
 
     base = nightly_baseload(df)
+    # Sanitize for JSON (remove NaN/inf)
+    def safe(val):
+        if isinstance(val, (float, int)):
+            if not np.isfinite(val):
+                return None
+        return val
+
+    events_out = []
+    if not ef.empty:
+        for r in ef.tail(200).to_dict(orient="records"):
+            events_out.append({k: safe(v) for k, v in r.items()})
+
+    base_dict = {str(k): safe(v) for k, v in base.tail(14).items()}
+
     return {
         "lookback_days": last_days,
         "from": df.index.min().isoformat() if not df.empty else None,
         "to": df.index.max().isoformat() if not df.empty else None,
         "n_points": int(len(df)),
         "n_events": int(len(ef)),
-        "baseload": base.tail(14).to_dict(),
-        "events": ef.tail(200).to_dict(orient="records"),
+        "baseload": base_dict,
+        "events": events_out,
     }
