@@ -5,9 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential \
-      gcc \
-      libstdc++6 \
+    build-essential \
+    gcc \
+    libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -18,9 +18,9 @@ ENV APP_GIT_SHA=$GIT_SHA
 # Install poetry & deps first (layer cache) without requiring package source code
 COPY pyproject.toml /app/pyproject.toml
 RUN pip install --upgrade pip \
- && pip install --no-cache-dir poetry \
- && poetry config virtualenvs.create false \
- && poetry install --no-interaction --no-ansi --no-root
+    && pip install --no-cache-dir poetry \
+    && poetry config virtualenvs.create false \
+    && poetry install --no-interaction --no-ansi --no-root
 
 # Now copy the rest of the project
 COPY . /app
