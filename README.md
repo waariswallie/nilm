@@ -53,6 +53,16 @@ GET /scan?last_days=5
 ```
 Gebruik `LOOKBACK_DAYS` in `.env` om de default te wijzigen.
 
+### Clustering tuning
+Env variabelen:
+```
+CLUSTER_EPS=0.55            # radius in gestandaardiseerde feature space
+CLUSTER_MIN_SAMPLES=8       # minimum events per cluster
+```
+Output van `/scan` bevat nu `clusters` met per cluster: count, gemiddelde stap (`avg_dP_kW`), mediane duur en gemiddelde ruwe energie (`avg_energy_kWh`). Alles met label -1 is "noise" volgens DBSCAN.
+
+Event energie (benadering) = stapvermogen * duur (rechthoek). Voor apparaten met pulsen (wasmachine) wordt dit onderschat; later kunnen we energie integreren over de periode.
+
 # NILM
 
 Non-Intrusive Load Monitoring (NILM) toolkit / playground + een uitbreidbare event-based pipeline met FastAPI & clustering.

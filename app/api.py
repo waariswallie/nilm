@@ -88,6 +88,23 @@ def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
 
     base_dict = {str(k): safe(v) for k, v in base.tail(14).items()}
 
+    # Cluster summary
+    cluster_summary = []
+    if not ef.empty and "cluster" in ef.columns:
+        grp = ef.groupby("cluster", dropna=False)
+        for cid, g in grp:
+            try:
+                cid_int = int(f"{cid}")
+            except Exception:  # noqa: BLE001
+                cid_int = -9999
+            cluster_summary.append({
+                "cluster": cid_int,
+                "count": int(len(g)),
+                "avg_dP_kW": float(g["dP_on_kW"].mean()),
+                "median_duration_min": float(g["duration_min"].median() if g["duration_min"].notna().any() else 0),
+                "avg_energy_kWh": float(g["energy_kWh"].mean()) if g["energy_kWh"].notna().any() else None,
+            })
+
     return {
         "lookback_days": last_days,
         "from": df.index.min().isoformat() if not df.empty else None,
@@ -96,4 +113,5 @@ def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
         "n_events": int(len(ef)),
         "baseload": base_dict,
         "events": events_out,
+        "clusters": cluster_summary,
     }

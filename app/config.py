@@ -64,6 +64,10 @@ class Settings(BaseModel):
     min_event_duration_min: int = int(os.getenv("MIN_EVENT_DURATION_MIN", 2))
     max_event_duration_min: int = int(os.getenv("MAX_EVENT_DURATION_MIN", 240))
 
+    # Clustering parameters
+    cluster_eps: float = float(os.getenv("CLUSTER_EPS", 0.55))
+    cluster_min_samples: int = int(os.getenv("CLUSTER_MIN_SAMPLES", 8))
+
     dbconnect_path: Path = Path("/run/secrets/dbconnect.conf")
     mock_db: bool = bool(int(os.getenv("MOCK_DB", "0")))  # MOCK_DB=1 to use synthetic data
 
