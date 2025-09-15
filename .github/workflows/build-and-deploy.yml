@@ -117,14 +117,26 @@ jobs:
         run: |
           if [ -z "${{ needs.build.outputs.safe_branch }}" ]; then echo "(INFO) safe_branch empty (build skipped)"; fi
           echo "Skipping deploy because build was skipped."; exit 0
+      - name: Resolve branch fallback
+        id: deploy_branch
+        run: |
+          if [ -n "${{ needs.build.outputs.safe_branch }}" ]; then
+            echo "SAFE_BRANCH=${{ needs.build.outputs.safe_branch }}" >> $GITHUB_OUTPUT
+            echo "Using job output safe_branch='${{ needs.build.outputs.safe_branch }}'"
+          else
+            BRANCH="${GITHUB_REF##*/}"
+            SAFE_BRANCH=${BRANCH//[^a-zA-Z0-9_-]/-}
+            echo "SAFE_BRANCH=$SAFE_BRANCH" >> $GITHUB_OUTPUT
+            echo "Computed fallback SAFE_BRANCH='$SAFE_BRANCH' from GITHUB_REF='$GITHUB_REF'"
+          fi
       - name: Guard fail if safe_branch empty
-        if: needs.build.outputs.skipped != 'true' && needs.build.outputs.safe_branch == ''
+        if: needs.build.outputs.skipped != 'true' && steps.deploy_branch.outputs.SAFE_BRANCH == ''
         run: |
           echo "::error ::SAFE_BRANCH output is empty – aborting to avoid deploying with blank tag."; exit 1
       - name: Deploy via deploy.sh (forced)
         run: |
           set -euo pipefail
           chmod +x scripts/deploy.sh
-          ./scripts/deploy.sh --branch "${{ needs.build.outputs.safe_branch }}" --force
+          ./scripts/deploy.sh --branch "${{ steps.deploy_branch.outputs.SAFE_BRANCH }}" --force
       - name: Show running container
-        run: docker ps --filter name=nilm-app-${{ needs.build.outputs.safe_branch }} || true
+        run: docker ps --filter name=nilm-app-${{ steps.deploy_branch.outputs.SAFE_BRANCH }} || true
