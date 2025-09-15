@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Query
+from fastapi.responses import HTMLResponse
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any
@@ -56,7 +57,7 @@ def status() -> Dict[str, Any]:
 
 
 @router.get("/scan")
-def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
+def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=365)):
     # Limit fetch to last N days to reduce load
     start_dt = datetime.utcnow() - timedelta(days=last_days)
     start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
@@ -115,3 +116,134 @@ def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
         "events": events_out,
         "clusters": cluster_summary,
     }
+
+
+@router.get("/viz", response_class=HTMLResponse, summary="Simple in-browser visualization of baseload, clusters and events")
+def viz(days: int = Query(default=30, ge=1, le=365)):
+        """Return a lightweight HTML page with client-side charts.
+
+        Usage:
+            /viz              -> last 30 days
+            /viz?days=90      -> last 90 days
+            /viz?days=365     -> last year (may be slower on low-power devices)
+        """
+        # We keep the page fully static (just one request to /scan) to avoid heavy backend work.
+        # For large day windows only summary (clusters, baseload) is meaningful because events list is capped.
+        # Build HTML without f-string to avoid escaping all CSS/JS braces; simple placeholder replacement used.
+        html = """
+<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"utf-8\" />
+    <title>NILM Quick Viz</title>
+    <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />
+    <style>
+        body {{ font-family: system-ui, Arial, sans-serif; margin: 0; padding: 1rem 1.5rem 3rem; background:#0f1115; color:#e6e8ea; }}
+        h1,h2 {{ font-weight:600; margin: 0.8rem 0 0.4rem; }}
+        a, a:visited {{ color:#4ea3ff; }}
+        .row {{ display:flex; flex-wrap:wrap; gap:1.5rem; }}
+        .card {{ background:#1b1f26; padding:1rem 1.2rem; border-radius:8px; flex:1 1 360px; box-shadow:0 2px 4px rgba(0,0,0,0.4); }}
+        canvas {{ max-width:100%; height:300px; }}
+        table {{ border-collapse: collapse; width:100%; font-size:0.85rem; }}
+        th, td {{ border-bottom:1px solid #2c323c; padding:4px 6px; text-align:left; }}
+        th {{ background:#232a33; position:sticky; top:0; }}
+        .tag {{ display:inline-block; background:#26323f; padding:2px 6px; border-radius:4px; margin:2px; font-size:0.7rem; }}
+        .warn {{ color:#ffa94d; }}
+        #footer {{ margin-top:2rem; font-size:0.7rem; opacity:0.7; }}
+        input, button {{ background:#232a33; border:1px solid #36404c; color:#e6e8ea; padding:4px 8px; border-radius:4px; }}
+        button {{ cursor:pointer; }}
+    </style>
+    <script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js\"></script>
+</head>
+<body>
+    <h1>NILM Quick Visualization</h1>
+    <p>Laatste <span id=\"days-span\"></span> dagen. Pas aan: <input type=\"number\" id=\"days-input\" min=\"1\" max=\"365\" style=\"width:5rem\"/> <button id=\"reload-btn\">Herlaad</button> &middot; <a href=\"/docs\">API docs</a></p>
+    <div class=\"row\">
+        <div class=\"card\" style=\"flex:1 1 500px\">
+            <h2>Baseload (nacht median 02–05h)</h2>
+            <canvas id=\"baseloadChart\"></canvas>
+        </div>
+        <div class=\"card\" style=\"max-width:420px\">
+            <h2>Cluster verdeling</h2>
+            <canvas id=\"clusterChart\"></canvas>
+            <div id=\"clusterSummary\" style=\"margin-top:0.5rem;font-size:0.8rem\"></div>
+        </div>
+    </div>
+    <div class=\"card\">
+        <h2>Recente events (max 200)</h2>
+        <canvas id=\"eventsScatter\" style=\"height:260px\"></canvas>
+        <p style=\"font-size:0.7rem;opacity:0.7\">We tonen alleen de laatste 200 events uit /scan voor performance. Gebruik kleinere window voor meer detail.</p>
+        <table id=\"eventsTable\"></table>
+    </div>
+        <div id=\"footer\">Generated __GEN_AT__ – Simple client viz.</div>
+<script>
+const urlParams = new URLSearchParams(window.location.search);
+    const days = Number(urlParams.get('days') || __DAYS__);
+document.getElementById('days-input').value = days;
+document.getElementById('days-span').textContent = days;
+document.getElementById('reload-btn').onclick = () => {
+    const d = document.getElementById('days-input').value || 30;
+    window.location.search = '?days=' + d;
+};
+
+function fmtTS(ts){ if(!ts) return ''; return ts.replace('T',' ').replace('+00:00',''); }
+
+async function load(){
+            const resp = await fetch('/scan?last_days=' + days);
+    if(!resp.ok){
+        document.body.innerHTML = `<h2>Fout bij laden /scan (${resp.status})</h2>`;return;
+    }
+    const data = await resp.json();
+    renderBaseload(data.baseload);
+    renderClusters(data.clusters, data.n_events);
+    renderEvents(data.events);
+}
+
+function renderBaseload(base){
+    const labels = Object.keys(base).sort();
+    const vals = labels.map(k=> base[k]);
+    const ctx = document.getElementById('baseloadChart');
+    new Chart(ctx,{type:'line',data:{labels, datasets:[{label:'Baseload kW', data:vals, tension:0.25, borderColor:'#4ea3ff', backgroundColor:'rgba(78,163,255,0.15)', fill:true, pointRadius:2}]}, options:{scales:{x:{ticks:{color:'#adb5bd'}}, y:{ticks:{color:'#adb5bd'}}}, plugins:{legend:{labels:{color:'#e6e8ea'}}}}});
+}
+
+function renderClusters(clusters, total){
+    if(!clusters || !clusters.length){ return; }
+    const ctx = document.getElementById('clusterChart');
+    const labels = clusters.map(c=> 'C'+c.cluster);
+    const counts = clusters.map(c=> c.count);
+    const colors = clusters.map(c=> c.cluster === -1 ? '#ff6b6b' : '#51cf66');
+    new Chart(ctx,{type:'doughnut', data:{labels, datasets:[{data:counts, backgroundColor:colors}]}, options:{plugins:{legend:{labels:{color:'#e6e8ea'}}}}});
+    const div = document.getElementById('clusterSummary');
+    div.innerHTML = clusters.map(c=>`<div class=tag>C${c.cluster}: {count: ${c.count}, avg_dP: ${c.avg_dP_kW?.toFixed?.(2)} kW}</div>`).join('');
+}
+
+function renderEvents(events){
+    if(!events) return;
+    // Scatter: x = start timestamp index, y = dP_on_kW, color by cluster
+    const ctx = document.getElementById('eventsScatter');
+    const palette = ['#ff6b6b','#51cf66','#339af0','#845ef7','#ffa94d','#15aabf'];
+    const points = events.map((e,i)=>({x:i, y:e.dP_on_kW, c:e.cluster}));
+    const datasets = [];
+    // group by cluster
+    const byC = {};
+    points.forEach(p=>{ byC[p.c] = byC[p.c] || []; byC[p.c].push(p); });
+    Object.keys(byC).forEach((cid,idx)=>{
+        const color = cid == -1 ? '#495057' : palette[idx % palette.length];
+        datasets.push({label:'C'+cid, data:byC[cid], parsing:false, showLine:false, pointRadius:4, borderColor:color, backgroundColor:color});
+    });
+    new Chart(ctx,{type:'scatter', data:{datasets}, options:{scales:{x:{ticks:{color:'#adb5bd'}, title:{display:true,text:'Event index',color:'#adb5bd'}}, y:{ticks:{color:'#adb5bd'}, title:{display:true,text:'ΔP kW',color:'#adb5bd'}}}, plugins:{legend:{labels:{color:'#e6e8ea'}}}}});
+
+    // Table (first 40)
+    const tbl = document.getElementById('eventsTable');
+    const header = `<tr><th>Start</th><th>ΔP kW</th><th>Duur (min)</th><th>Energy kWh</th><th>Cluster</th></tr>`;
+    const rows = events.slice(0,40).map(e=>`<tr><td>${fmtTS(e.t_on)}</td><td>${e.dP_on_kW?.toFixed?.(2)}</td><td>${e.duration_min ?? ''}</td><td>${e.energy_kWh? e.energy_kWh.toFixed(3):''}</td><td>${e.cluster}</td></tr>`).join('');
+    tbl.innerHTML = header + rows;
+}
+
+load();
+</script>
+</body>
+</html>
+    """
+    html = html.replace("__DAYS__", str(days)).replace("__GEN_AT__", datetime.utcnow().isoformat()+"Z")
+    return HTMLResponse(content=html)
