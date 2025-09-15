@@ -120,17 +120,17 @@ def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=365)):
 
 @router.get("/viz", response_class=HTMLResponse, summary="Simple in-browser visualization of baseload, clusters and events")
 def viz(days: int = Query(default=30, ge=1, le=365)):
-        """Return a lightweight HTML page with client-side charts.
+    """Return a lightweight HTML page with client-side charts.
 
-        Usage:
-            /viz              -> last 30 days
-            /viz?days=90      -> last 90 days
-            /viz?days=365     -> last year (may be slower on low-power devices)
-        """
-        # We keep the page fully static (just one request to /scan) to avoid heavy backend work.
-        # For large day windows only summary (clusters, baseload) is meaningful because events list is capped.
-        # Build HTML without f-string to avoid escaping braces; simple placeholder replacement used.
-        html = """
+    Usage:
+        /viz              -> last 30 days
+        /viz?days=90      -> last 90 days
+        /viz?days=365     -> last year (may be slower on low-power devices)
+    """
+    # We keep the page fully static (just one request to /scan) to avoid heavy backend work.
+    # For large day windows only summary (clusters, baseload) is meaningful because events list is capped.
+    # Build HTML without f-string to avoid escaping braces; simple placeholder replacement used.
+    html = """
 <!DOCTYPE html>
 <html lang=\"en\">
 <head>
