@@ -48,6 +48,18 @@ jobs:
             echo "Relevant changes detected → building image";
             echo "SKIP_BUILD=false" >> $GITHUB_OUTPUT;
           fi
+      - name: Pre-pull buildkit image (retry up to 3x)
+        if: steps.decide.outputs.SKIP_BUILD == 'false'
+        run: |
+          set -e
+          for i in 1 2 3; do
+            echo "Attempt $i: docker pull moby/buildkit:buildx-stable-1";
+            if docker pull moby/buildkit:buildx-stable-1 2>&1; then
+              echo "Pulled buildkit image."; break; fi
+            echo "Pull failed (attempt $i). Sleep $((5*i))s and retry.";
+            sleep $((5*i));
+          done
+          docker images | grep moby/buildkit || echo "WARNING: buildkit image not present; buildx action will attempt again."
       - name: Set up QEMU
         if: steps.decide.outputs.SKIP_BUILD == 'false'
         uses: docker/setup-qemu-action@v3
@@ -56,6 +68,9 @@ jobs:
       - name: Set up Docker Buildx
         if: steps.decide.outputs.SKIP_BUILD == 'false'
         uses: docker/setup-buildx-action@v3
+        with:
+          # Enable debug logging; helps diagnose buildkit pulls
+          buildkitd-flags: --debug
       - name: Log in to GHCR
         if: steps.decide.outputs.SKIP_BUILD == 'false'
         uses: docker/login-action@v3
@@ -93,6 +108,7 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.repositoryUrl }}
+          provenance: false
       - name: Inspect manifest
         if: steps.decide.outputs.SKIP_BUILD == 'false'
         run: docker buildx imagetools inspect ${{ steps.tags.outputs.IMAGE_LATEST }} || true
