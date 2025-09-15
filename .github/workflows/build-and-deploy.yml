@@ -12,13 +12,20 @@ jobs:
       contents: read
       packages: write
     outputs:
-      safe_branch: ${{ steps.tags.outputs.SAFE_BRANCH }}
+      safe_branch: ${{ steps.branch.outputs.SAFE_BRANCH }}
       image_latest: ${{ steps.tags.outputs.IMAGE_LATEST }}
       image_versioned: ${{ steps.tags.outputs.IMAGE_VERSIONED }}
       sha_short: ${{ steps.meta.outputs.VERSION }}
       skipped: ${{ steps.decide.outputs.SKIP_BUILD }}
     steps:
       - uses: actions/checkout@v4
+      - name: Compute branch name
+        id: branch
+        run: |
+          BRANCH="${GITHUB_REF##*/}"
+          SAFE_BRANCH=${BRANCH//[^a-zA-Z0-9_-]/-}
+          echo "BRANCH=$BRANCH" >> $GITHUB_OUTPUT
+          echo "SAFE_BRANCH=$SAFE_BRANCH" >> $GITHUB_OUTPUT
       - name: Decide if build is needed
         id: decide
         run: |
@@ -64,8 +71,8 @@ jobs:
         if: steps.decide.outputs.SKIP_BUILD == 'false'
         id: tags
         run: |
-          BRANCH="${GITHUB_REF##*/}"
-          SAFE_BRANCH=${BRANCH//[^a-zA-Z0-9_-]/-}
+          BRANCH="${{ steps.branch.outputs.BRANCH }}"
+          SAFE_BRANCH="${{ steps.branch.outputs.SAFE_BRANCH }}"
           IMAGE_BASE=ghcr.io/${{ github.repository_owner }}/nilm-app
           echo "SAFE_BRANCH=$SAFE_BRANCH" >> $GITHUB_OUTPUT
           echo "IMAGE_LATEST=$IMAGE_BASE:${SAFE_BRANCH}-latest" >> $GITHUB_OUTPUT
@@ -108,8 +115,12 @@ jobs:
       - name: Skip deploy (no new image)
         if: needs.build.outputs.skipped == 'true'
         run: |
-          echo "Skipping deploy because build was skipped.";
-          exit 0
+          if [ -z "${{ needs.build.outputs.safe_branch }}" ]; then echo "(INFO) safe_branch empty (build skipped)"; fi
+          echo "Skipping deploy because build was skipped."; exit 0
+      - name: Guard fail if safe_branch empty
+        if: needs.build.outputs.skipped != 'true' && needs.build.outputs.safe_branch == ''
+        run: |
+          echo "::error ::SAFE_BRANCH output is empty – aborting to avoid deploying with blank tag."; exit 1
       - name: Deploy via deploy.sh (forced)
         run: |
           set -euo pipefail
