@@ -16,24 +16,52 @@ jobs:
       image_latest: ${{ steps.tags.outputs.IMAGE_LATEST }}
       image_versioned: ${{ steps.tags.outputs.IMAGE_VERSIONED }}
       sha_short: ${{ steps.meta.outputs.VERSION }}
+      skipped: ${{ steps.decide.outputs.SKIP_BUILD }}
     steps:
       - uses: actions/checkout@v4
+      - name: Decide if build is needed
+        id: decide
+        run: |
+          set -euo pipefail
+          CM=$(git log -1 --pretty=%B || true)
+          if echo "$CM" | grep -qi '\[full-build\]'; then echo "SKIP_BUILD=false" >> $GITHUB_OUTPUT; exit 0; fi
+          if git rev-parse HEAD^ >/dev/null 2>&1; then BASE=HEAD^; else BASE=HEAD; fi
+          CHANGED=$(git diff --name-only $BASE HEAD || true)
+          echo "Changed files:\n$CHANGED"
+          NEED=0
+          for f in $CHANGED; do
+            case "$f" in
+              Dockerfile|pyproject.toml|poetry.lock|requirements.txt|app/*|src/*|docker-compose*|.github/workflows/build-and-deploy.yml) NEED=1; break;;
+            esac
+          done
+          if [ $NEED -eq 0 ]; then
+            echo "No relevant changes → skipping image build";
+            echo "SKIP_BUILD=true" >> $GITHUB_OUTPUT;
+          else
+            echo "Relevant changes detected → building image";
+            echo "SKIP_BUILD=false" >> $GITHUB_OUTPUT;
+          fi
       - name: Set up QEMU
+        if: steps.decide.outputs.SKIP_BUILD == 'false'
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64,amd64
       - name: Set up Docker Buildx
+        if: steps.decide.outputs.SKIP_BUILD == 'false'
         uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
+        if: steps.decide.outputs.SKIP_BUILD == 'false'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Extract version
+        if: steps.decide.outputs.SKIP_BUILD == 'false'
         id: meta
         run: echo "VERSION=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
       - name: Compute tags
+        if: steps.decide.outputs.SKIP_BUILD == 'false'
         id: tags
         run: |
           BRANCH="${GITHUB_REF##*/}"
@@ -43,13 +71,15 @@ jobs:
           echo "IMAGE_LATEST=$IMAGE_BASE:${SAFE_BRANCH}-latest" >> $GITHUB_OUTPUT
           echo "IMAGE_VERSIONED=$IMAGE_BASE:${SAFE_BRANCH}-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
           echo "TAGS=$IMAGE_BASE:${SAFE_BRANCH}-latest,$IMAGE_BASE:${SAFE_BRANCH}-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
-      - name: Build & Push (multi-arch)
+      - name: Build & Push (conditional multi-arch)
+        if: steps.decide.outputs.SKIP_BUILD == 'false'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: true
-          platforms: linux/amd64,linux/arm64
+          # Speed: only arm64 for init branch unless commit forces full build
+          platforms: ${{ steps.tags.outputs.SAFE_BRANCH == 'init' && 'linux/arm64' || 'linux/amd64,linux/arm64' }}
           build-args: |
             GIT_SHA=${{ github.sha }}
           tags: ${{ steps.tags.outputs.TAGS }}
@@ -57,7 +87,12 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.repositoryUrl }}
       - name: Inspect manifest
+        if: steps.decide.outputs.SKIP_BUILD == 'false'
         run: docker buildx imagetools inspect ${{ steps.tags.outputs.IMAGE_LATEST }} || true
+      - name: Note skipped build
+        if: steps.decide.outputs.SKIP_BUILD == 'true'
+        run: |
+          echo "Skip build: no relevant changes. Add [full-build] in commit message to override."
 
   deploy:
     runs-on: [self-hosted, linux, arm64, pi]
@@ -70,6 +105,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+      - name: Skip deploy (no new image)
+        if: needs.build.outputs.skipped == 'true'
+        run: |
+          echo "Skipping deploy because build was skipped.";
+          exit 0
       - name: Deploy via deploy.sh (forced)
         run: |
           set -euo pipefail

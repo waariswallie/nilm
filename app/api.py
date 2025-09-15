@@ -129,7 +129,7 @@ def viz(days: int = Query(default=30, ge=1, le=365)):
         """
         # We keep the page fully static (just one request to /scan) to avoid heavy backend work.
         # For large day windows only summary (clusters, baseload) is meaningful because events list is capped.
-        # Build HTML without f-string to avoid escaping all CSS/JS braces; simple placeholder replacement used.
+        # Build HTML without f-string to avoid escaping braces; simple placeholder replacement used.
         html = """
 <!DOCTYPE html>
 <html lang=\"en\">
@@ -138,20 +138,20 @@ def viz(days: int = Query(default=30, ge=1, le=365)):
     <title>NILM Quick Viz</title>
     <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />
     <style>
-        body {{ font-family: system-ui, Arial, sans-serif; margin: 0; padding: 1rem 1.5rem 3rem; background:#0f1115; color:#e6e8ea; }}
-        h1,h2 {{ font-weight:600; margin: 0.8rem 0 0.4rem; }}
-        a, a:visited {{ color:#4ea3ff; }}
-        .row {{ display:flex; flex-wrap:wrap; gap:1.5rem; }}
-        .card {{ background:#1b1f26; padding:1rem 1.2rem; border-radius:8px; flex:1 1 360px; box-shadow:0 2px 4px rgba(0,0,0,0.4); }}
-        canvas {{ max-width:100%; height:300px; }}
-        table {{ border-collapse: collapse; width:100%; font-size:0.85rem; }}
-        th, td {{ border-bottom:1px solid #2c323c; padding:4px 6px; text-align:left; }}
-        th {{ background:#232a33; position:sticky; top:0; }}
-        .tag {{ display:inline-block; background:#26323f; padding:2px 6px; border-radius:4px; margin:2px; font-size:0.7rem; }}
-        .warn {{ color:#ffa94d; }}
-        #footer {{ margin-top:2rem; font-size:0.7rem; opacity:0.7; }}
-        input, button {{ background:#232a33; border:1px solid #36404c; color:#e6e8ea; padding:4px 8px; border-radius:4px; }}
-        button {{ cursor:pointer; }}
+    body { font-family: system-ui, Arial, sans-serif; margin: 0; padding: 1rem 1.5rem 3rem; background:#0f1115; color:#e6e8ea; }
+    h1,h2 { font-weight:600; margin: 0.8rem 0 0.4rem; }
+    a, a:visited { color:#4ea3ff; }
+    .row { display:flex; flex-wrap:wrap; gap:1.5rem; }
+    .card { background:#1b1f26; padding:1rem 1.2rem; border-radius:8px; flex:1 1 360px; box-shadow:0 2px 4px rgba(0,0,0,0.4); }
+    canvas { max-width:100%; height:300px; }
+    table { border-collapse: collapse; width:100%; font-size:0.85rem; }
+    th, td { border-bottom:1px solid #2c323c; padding:4px 6px; text-align:left; }
+    th { background:#232a33; position:sticky; top:0; }
+    .tag { display:inline-block; background:#26323f; padding:2px 6px; border-radius:4px; margin:2px; font-size:0.7rem; }
+    .warn { color:#ffa94d; }
+    #footer { margin-top:2rem; font-size:0.7rem; opacity:0.7; }
+    input, button { background:#232a33; border:1px solid #36404c; color:#e6e8ea; padding:4px 8px; border-radius:4px; }
+    button { cursor:pointer; }
     </style>
     <script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js\"></script>
 </head>
