@@ -314,7 +314,17 @@ def autolabel_endpoint(last_days: int = Query(default=7, ge=1, le=30), overwrite
                 "avg_dP_kW": float(g["dP_on_kW"].mean()),
                 "median_duration_min": float(g["duration_min"].median() if g["duration_min"].notna().any() else 0),
                 "avg_energy_kWh": float(g["energy_kWh"].mean()) if g["energy_kWh"].notna().any() else None,
+                "total_energy_kWh": float(g["energy_kWh"].sum()) if g["energy_kWh"].notna().any() else None,
+                "avg_event_energy_kWh": float(g["energy_kWh"].mean()) if g["energy_kWh"].notna().any() else None,
+                "dP_min_kW": float(g["dP_on_kW"].min()),
+                "dP_max_kW": float(g["dP_on_kW"].max()),
+                "dP_std_kW": float(g["dP_on_kW"].std() if g["dP_on_kW"].notna().any() else 0.0),
+                "duration_min_min": float(g["duration_min"].min() if g["duration_min"].notna().any() else 0),
+                "duration_min_max": float(g["duration_min"].max() if g["duration_min"].notna().any() else 0),
                 "hours": hours,
+                "dows": list(g["t_on"].dt.weekday) if "t_on" in g else [],
+                "first_ts": g["t_on"].min().isoformat() if "t_on" in g else None,
+                "last_ts": g["t_on"].max().isoformat() if "t_on" in g else None,
             })
     cluster_stats = enrich_cluster_stats(cluster_stats)
     result = auto_label_clusters(cluster_stats, _label_store, overwrite=overwrite, extended=(feature_set == "extended"))
@@ -362,7 +372,17 @@ def autolabel_get(last_days: int = Query(default=7, ge=1, le=30),
                 "avg_dP_kW": float(g["dP_on_kW"].mean()),
                 "median_duration_min": float(g["duration_min"].median() if g["duration_min"].notna().any() else 0),
                 "avg_energy_kWh": float(g["energy_kWh"].mean()) if g["energy_kWh"].notna().any() else None,
+                "total_energy_kWh": float(g["energy_kWh"].sum()) if g["energy_kWh"].notna().any() else None,
+                "avg_event_energy_kWh": float(g["energy_kWh"].mean()) if g["energy_kWh"].notna().any() else None,
+                "dP_min_kW": float(g["dP_on_kW"].min()),
+                "dP_max_kW": float(g["dP_on_kW"].max()),
+                "dP_std_kW": float(g["dP_on_kW"].std() if g["dP_on_kW"].notna().any() else 0.0),
+                "duration_min_min": float(g["duration_min"].min() if g["duration_min"].notna().any() else 0),
+                "duration_min_max": float(g["duration_min"].max() if g["duration_min"].notna().any() else 0),
                 "hours": hours,
+                "dows": list(g["t_on"].dt.weekday) if "t_on" in g else [],
+                "first_ts": g["t_on"].min().isoformat() if "t_on" in g else None,
+                "last_ts": g["t_on"].max().isoformat() if "t_on" in g else None,
             })
     cluster_stats = enrich_cluster_stats(cluster_stats)
     enriched = apply_suggestions(cluster_stats, _label_store, extended=(feature_set == "extended"), debug=debug)
@@ -438,7 +458,7 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
     ef = cluster_events(ef, eps=eps, min_samples=min_samples)
 
     # Aggregate per cluster
-    clusters = {}
+    clusters: Dict[int, Dict[str, Any]] = {}
     for cid, g in ef.groupby("cluster", dropna=False):
         try:
             cid_int = int(f"{cid}")
@@ -458,6 +478,15 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
             "first_seen": g["t_on"].min().isoformat() if "t_on" in g else None,
             "last_seen": g["t_on"].max().isoformat() if "t_on" in g else None,
             "hours": list(g["t_on"].dt.hour) if "t_on" in g else [],
+            # extra stats for labeling
+            "dP_min_kW": float(g["dP_on_kW"].min()),
+            "dP_max_kW": float(g["dP_on_kW"].max()),
+            "dP_std_kW": float(g["dP_on_kW"].std() if g["dP_on_kW"].notna().any() else 0.0),
+            "duration_min_min": float(g["duration_min"].min() if g["duration_min"].notna().any() else 0),
+            "duration_min_max": float(g["duration_min"].max() if g["duration_min"].notna().any() else 0),
+            "first_ts": g["t_on"].min().isoformat() if "t_on" in g else None,
+            "last_ts": g["t_on"].max().isoformat() if "t_on" in g else None,
+            "dows": list(g["t_on"].dt.weekday) if "t_on" in g else [],
         }
 
     # Enrich with heuristics & suggestions
