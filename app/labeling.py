@@ -95,42 +95,52 @@ def enrich_cluster_stats(stats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return stats
 
 
-def suggest_label(stat: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Heuristic label suggestions based on aggregated cluster stats.
-
-    Expected keys: cluster, avg_dP_kW, median_duration_min, count, evening_ratio, active_hours_ratio.
-    Returns suggestion dict: {label, confidence, reason} or None.
-    Priority order matters: first matching rule is returned.
-    """
-    cid = stat.get("cluster")
-    if cid in (-1, None):  # skip noise
-        return None
+def _build_rules(stat: Dict[str, Any], extended: bool) -> List[Tuple[str, float, str, bool]]:
     dp = stat.get("avg_dP_kW") or 0.0
     dur = stat.get("median_duration_min") or 0.0
     cnt = stat.get("count", 0)
     evening_ratio = stat.get("evening_ratio", 0.0)
     active_hours_ratio = stat.get("active_hours_ratio", 0.0)
-    # Rule order defines priority
+    dP_max = stat.get("dP_max_kW", stat.get("dP_max", 0.0)) or 0.0
+    dP_std = stat.get("dP_std_kW", 0.0) or 0.0
+    pulses_per_day = stat.get("pulses_per_day", 0.0) or 0.0
     rules: List[Tuple[str, float, str, bool]] = []
-    # Quooker / waterkoker (korte hoge pieken)
+    # Basisset
     rules.append(("Quooker", 0.9, "hoge ΔP, korte duur", 1.5 <= dp <= 2.5 and dur < 8 and active_hours_ratio > 0.3))
-    # Droger (warmtepomp) langere runs (geclusterd tot pulses) -> langere median
     rules.append(("Droger-lang", 0.75, "lage ΔP lange duur", 0.4 <= dp <= 1.05 and dur >= 30 and cnt >= 5))
-    # Droger korte modulatie blokken
     rules.append(("Droger-pulse", 0.7, "lage ΔP middellange duur", 0.4 <= dp <= 1.05 and 8 <= dur < 30 and cnt >= 8))
-    # Vaatwasser heating (avond georienteerd)
     rules.append(("Vaatwasser", 0.68, "avond heating pulses", 1.5 <= dp <= 2.5 and 8 <= dur <= 40 and evening_ratio > 0.35))
-    # Wasmachine heating pulse
     rules.append(("Wasmachine-pulse", 0.6, "mid ΔP korte-middellange duur", 1.1 <= dp <= 2.2 and 5 <= dur <= 25 and evening_ratio < 0.55 and active_hours_ratio > 0.25))
-    # Onbekend groot apparaat (fallback high)
-    rules.append(("Hoog-vermogen-onbekend", 0.4, "hoge ΔP maar geen andere match", dp > 2.5 and dur >= 4))
+    if extended:
+        rules.append(("Vaatwasser-alt", 0.55, "avond + hoge piek (dp_max)", dP_max >= 1.6 and dp < 1.5 and 8 <= dur <= 60 and evening_ratio > 0.4))
+        rules.append(("Wasmachine-lang", 0.55, "lage-middellange ΔP lange median", 0.3 <= dp <= 1.2 and 30 <= dur <= 140 and pulses_per_day <= 6))
+        rules.append(("Standby-blok", 0.5, "laag verbruik breed actief", 0.05 <= dp <= 0.25 and dur >= 30 and active_hours_ratio >= 0.8 and cnt >= 5))
+        rules.append(("Koken/Inductie", 0.5, "hoge variatie korte duur", dP_max >= 2.0 and dP_std >= 0.35 and dur < 25 and evening_ratio > 0.4))
+    rules.append(("Hoog-vermogen-onbekend", 0.4, "hoge ΔP maar geen andere match", dP_max > 2.5 and dur >= 4))
+    return rules
+
+
+def suggest_label(stat: Dict[str, Any], extended: bool = False, trace: bool = False) -> Optional[Dict[str, Any]]:
+    cid = stat.get("cluster")
+    if cid in (-1, None):
+        return None
+    rules = _build_rules(stat, extended=extended)
+    rule_trace: List[Dict[str, Any]] = []
     for label, conf, reason, cond in rules:
-        if cond:
-            return {"label": label, "confidence": conf, "reason": reason}
+        matched = bool(cond)
+        if trace:
+            rule_trace.append({"rule": label, "matched": matched, "reason": reason if matched else None})
+        if matched:
+            out = {"label": label, "confidence": conf, "reason": reason}
+            if trace:
+                out["rule_trace"] = rule_trace
+            return out
+    if trace:
+        return {"label": None, "rule_trace": rule_trace}
     return None
 
 
-def apply_suggestions(stats: List[Dict[str, Any]], store: LabelStore) -> List[Dict[str, Any]]:
+def apply_suggestions(stats: List[Dict[str, Any]], store: LabelStore, extended: bool = False, debug: bool = False) -> List[Dict[str, Any]]:
     enriched = []
     for s in stats:
         cid_raw = s.get("cluster")
@@ -142,22 +152,24 @@ def apply_suggestions(stats: List[Dict[str, Any]], store: LabelStore) -> List[Di
             except Exception:
                 cid_int = None
             existing = store.get(cid_int) if cid_int is not None else None
-        suggestion = suggest_label(s)
+        suggestion = suggest_label(s, extended=extended, trace=debug)
         s_out = dict(s)
         if existing:
             s_out["label"] = existing.label
             s_out["label_source"] = existing.source
             s_out["label_confidence"] = existing.confidence
             s_out["label_updated_at"] = existing.updated_at
-        elif suggestion:
+        elif suggestion and suggestion.get("label"):
             s_out["suggested_label"] = suggestion["label"]
             s_out["suggested_confidence"] = suggestion["confidence"]
             s_out["suggested_reason"] = suggestion["reason"]
+        if suggestion and "rule_trace" in suggestion:
+            s_out["rule_trace"] = suggestion["rule_trace"]
         enriched.append(s_out)
     return enriched
 
 
-def auto_label_clusters(stats: List[Dict[str, Any]], store: LabelStore, overwrite: bool = False) -> Dict[str, Any]:
+def auto_label_clusters(stats: List[Dict[str, Any]], store: LabelStore, overwrite: bool = False, extended: bool = False) -> Dict[str, Any]:
     """Persist suggestions into label store.
 
     Returns dict with applied & skipped lists.
@@ -174,7 +186,7 @@ def auto_label_clusters(stats: List[Dict[str, Any]], store: LabelStore, overwrit
         except Exception:  # noqa: BLE001
             continue
         existing = store.get(cid)
-        suggestion = suggest_label(s)
+        suggestion = suggest_label(s, extended=extended, trace=False)
         if not suggestion:
             continue
         if existing and not overwrite and existing.source == "manual":

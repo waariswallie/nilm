@@ -187,7 +187,9 @@ def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30),
                       min_dur: int | None = Query(default=None, description="Override min event duration (minutes)"),
                       recluster_noise: bool = Query(default=False, description="Voer tweede clustering uit op noise (-1)"),
                       noise_eps: float | None = Query(default=None, description="DBSCAN eps voor noise re-cluster"),
-                      noise_min_samples: int | None = Query(default=None, ge=1, description="DBSCAN min_samples voor noise re-cluster")):
+                      noise_min_samples: int | None = Query(default=None, ge=1, description="DBSCAN min_samples voor noise re-cluster"),
+                      feature_set: str = Query(default="basic", pattern="^(basic|extended)$"),
+                      debug: bool = Query(default=False, description="Voeg rule_trace toe")):
     start_dt = datetime.utcnow() - timedelta(days=last_days)
     start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
     df = fetch_minute_power(start_ts=start_iso)
@@ -267,17 +269,18 @@ def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30),
                 "hours": hours,
             })
     cluster_stats = enrich_cluster_stats(cluster_stats)
-    enriched = apply_suggestions(cluster_stats, _label_store)
+    enriched = apply_suggestions(cluster_stats, _label_store, extended=(feature_set == "extended"), debug=debug)
     note = None
     if note_parts:
         note = "; ".join(note_parts)
-    return {"clusters": enriched, "note": note}
+    return {"clusters": enriched, "note": note, "feature_set": feature_set, "debug": debug}
 
 
 @router.post("/autolabel", summary="Automatisch labels toepassen op clusters op basis van heuristieken")
 def autolabel_endpoint(last_days: int = Query(default=7, ge=1, le=30), overwrite: bool = False,
                        eps: float | None = Query(default=None),
-                       min_samples: int | None = Query(default=None, ge=1)):
+                       min_samples: int | None = Query(default=None, ge=1),
+                       feature_set: str = Query(default="basic", pattern="^(basic|extended)$")):
     # Reuse clustering logic
     start_dt = datetime.utcnow() - timedelta(days=last_days)
     start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
@@ -312,8 +315,8 @@ def autolabel_endpoint(last_days: int = Query(default=7, ge=1, le=30), overwrite
                 "hours": hours,
             })
     cluster_stats = enrich_cluster_stats(cluster_stats)
-    result = auto_label_clusters(cluster_stats, _label_store, overwrite=overwrite)
-    enriched = apply_suggestions(cluster_stats, _label_store)
+    result = auto_label_clusters(cluster_stats, _label_store, overwrite=overwrite, extended=(feature_set == "extended"))
+    enriched = apply_suggestions(cluster_stats, _label_store, extended=(feature_set == "extended"))
     return {"lookback_days": last_days, **result, "clusters": enriched}
 
 
@@ -321,7 +324,9 @@ def autolabel_endpoint(last_days: int = Query(default=7, ge=1, le=30), overwrite
 @router.get("/autolabel", summary="Alias van POST /autolabel (dry-run)")
 def autolabel_get(last_days: int = Query(default=7, ge=1, le=30),
                   eps: float | None = Query(default=None),
-                  min_samples: int | None = Query(default=None, ge=1)):
+                  min_samples: int | None = Query(default=None, ge=1),
+                  feature_set: str = Query(default="basic", pattern="^(basic|extended)$"),
+                  debug: bool = Query(default=False)):
     # Voer dezelfde logica uit maar persist niet: we roepen autolabel_endpoint aan met overwrite=False
     # en daarna laden we labels opnieuw zodat we een consistent antwoord hebben.
     # Omdat autolabel_endpoint sowieso persist doet, maken we hier een 'dry run' variant die GEEN opslag doet.
@@ -358,9 +363,8 @@ def autolabel_get(last_days: int = Query(default=7, ge=1, le=30),
                 "hours": hours,
             })
     cluster_stats = enrich_cluster_stats(cluster_stats)
-    # Geen persist hier: alleen suggesties tonen + bestaande labels
-    enriched = apply_suggestions(cluster_stats, _label_store)
-    return {"lookback_days": last_days, "applied": [], "skipped": [], "clusters": enriched, "note": "GET /autolabel is dry-run; gebruik POST om labels op te slaan."}
+    enriched = apply_suggestions(cluster_stats, _label_store, extended=(feature_set == "extended"), debug=debug)
+    return {"lookback_days": last_days, "applied": [], "skipped": [], "clusters": enriched, "feature_set": feature_set, "debug": debug, "note": "GET /autolabel is dry-run; gebruik POST om labels op te slaan."}
 
 
 from pydantic import BaseModel
@@ -410,7 +414,8 @@ def delete_label(cluster: int):
 def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noise: bool = False,
                      merge_labels: bool = Query(default=True, description="Combine clusters met hetzelfde label"),
                      eps: float | None = Query(default=None),
-                     min_samples: int | None = Query(default=None, ge=1)):
+                     min_samples: int | None = Query(default=None, ge=1),
+                     feature_set: str = Query(default="basic", pattern="^(basic|extended)$")):
     """Return an approximate energy usage overview per detected (labeled) device.
 
     Energy is estimated from event rectangle (ΔP * duration). For multi-cycle devices (bv. wasmachine)
@@ -456,7 +461,7 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
     # Enrich with heuristics & suggestions
     raw_list = list(clusters.values())
     raw_list = enrich_cluster_stats(raw_list)
-    enriched = apply_suggestions(raw_list, _label_store)
+    enriched = apply_suggestions(raw_list, _label_store, extended=(feature_set == "extended"))
 
     # Build device list
     total_energy_all = sum(d.get("total_energy_kWh", 0.0) for d in enriched)
