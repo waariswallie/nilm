@@ -231,6 +231,89 @@ def set_label(body: LabelIn):
     return {"ok": True, "label": cl.to_dict()}
 
 
+@router.get("/devices", summary="Aggregated per-device (cluster) energy usage over a window")
+def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noise: bool = False):
+    """Return an approximate energy usage overview per detected (labeled) device.
+
+    Energy is estimated from event rectangle (ΔP * duration). For multi-cycle devices (bv. wasmachine)
+    alleen heating pulses worden nu getoond; totale cycle energie kan onderschat zijn.
+    """
+    start_dt = datetime.utcnow() - timedelta(days=last_days)
+    start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
+    df = fetch_minute_power(start_ts=start_iso)
+    evts = detect_events(
+        df,
+        watt_threshold=settings.event_watt_threshold,
+        min_dur=settings.min_event_duration_min,
+        max_dur=settings.max_event_duration_min,
+    )
+    ef = build_event_frame(evts)
+    if ef.empty:
+        return {"devices": [], "total_event_energy_kWh": 0.0, "from": start_iso, "to": datetime.utcnow().isoformat(), "lookback_days": last_days}
+    ef = cluster_events(ef)
+
+    # Aggregate per cluster
+    clusters = {}
+    for cid, g in ef.groupby("cluster", dropna=False):
+        try:
+            cid_int = int(f"{cid}")
+        except Exception:  # noqa: BLE001
+            cid_int = -9999
+        if cid_int == -1 and not include_noise:
+            continue
+        energy_series = g["energy_kWh"].fillna(0)
+        total_energy = float(energy_series.sum())
+        clusters[cid_int] = {
+            "cluster": cid_int,
+            "events": int(len(g)),
+            "avg_dP_kW": float(g["dP_on_kW"].mean()),
+            "median_duration_min": float(g["duration_min"].median() if g["duration_min"].notna().any() else 0),
+            "total_energy_kWh": total_energy,
+            "avg_event_energy_kWh": float(energy_series.mean()) if len(energy_series) else 0.0,
+            "first_seen": g["t_on"].min().isoformat() if "t_on" in g else None,
+            "last_seen": g["t_on"].max().isoformat() if "t_on" in g else None,
+            "hours": list(g["t_on"].dt.hour) if "t_on" in g else [],
+        }
+
+    # Enrich with heuristics & suggestions
+    raw_list = list(clusters.values())
+    raw_list = enrich_cluster_stats(raw_list)
+    enriched = apply_suggestions(raw_list, _label_store)
+
+    # Build device list
+    total_energy_all = sum(d.get("total_energy_kWh", 0.0) for d in enriched)
+    devices_out = []
+    for d in enriched:
+        label = d.get("label") or d.get("suggested_label") or f"Cluster {d['cluster']}"
+        source = d.get("label_source") or ("suggested" if d.get("suggested_label") else None)
+        share = (d.get("total_energy_kWh", 0.0) / total_energy_all * 100.0) if total_energy_all > 0 else 0.0
+        devices_out.append({
+            "name": label,
+            "cluster": d["cluster"],
+            "source": source,
+            "events": d["events"],
+            "avg_dP_kW": d["avg_dP_kW"],
+            "median_duration_min": d["median_duration_min"],
+            "total_energy_kWh": round(d.get("total_energy_kWh", 0.0), 4),
+            "avg_event_energy_kWh": round(d.get("avg_event_energy_kWh", 0.0), 4),
+            "energy_share_pct": round(share, 2),
+            "first_seen": d.get("first_seen"),
+            "last_seen": d.get("last_seen"),
+        })
+
+    # Sort by energy desc
+    devices_out.sort(key=lambda x: x["total_energy_kWh"], reverse=True)
+
+    return {
+        "from": df.index.min().isoformat() if not df.empty else start_iso,
+        "to": df.index.max().isoformat() if not df.empty else datetime.utcnow().isoformat(),
+        "lookback_days": last_days,
+        "total_event_energy_kWh": round(total_energy_all, 4),
+        "devices": devices_out,
+        "note": "Energy per event = dP * duration (rectangle). Lange cycli met meerdere heating pulses (bv. wasmachine) worden als losse events getoond.",
+    }
+
+
 @router.get("/viz", response_class=HTMLResponse, summary="Simple in-browser visualization of baseload, clusters and events")
 def viz(days: int = Query(default=30, ge=1, le=365)):
     """Return a lightweight HTML page with client-side charts.
