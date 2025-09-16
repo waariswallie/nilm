@@ -736,7 +736,7 @@ load();
 
 @router.get("/overview", response_class=HTMLResponse, summary="Unified dashboard (clusters, devices, sessions)")
 def overview(last_days: int = Query(default=7, ge=1, le=30), feature_set: str = Query(default="extended", pattern="^(basic|extended)$")):
-        html = """
+    html = """
 <!DOCTYPE html>
 <html lang=\"en\">
 <head>
@@ -867,5 +867,30 @@ load();
 </body>
 </html>
         """
-        html = html.replace('%DAYS%', str(last_days)).replace('%FEATURE_SET%', feature_set)
-        return HTMLResponse(content=html)
+    html = html.replace('%DAYS%', str(last_days)).replace('%FEATURE_SET%', feature_set)
+    return HTMLResponse(content=html)
+
+
+# Alias /dashboard (so you can try both) + simple root index
+@router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_alias(last_days: int = Query(default=7, ge=1, le=30), feature_set: str = Query(default="extended", pattern="^(basic|extended)$")):
+    return overview(last_days=last_days, feature_set=feature_set)
+
+
+@router.get("/", response_class=HTMLResponse, include_in_schema=False)
+def index():
+    return HTMLResponse("""
+    <html><head><title>NILM API</title><style>body{font-family:system-ui;background:#111;color:#eee;padding:1.2rem;}</style></head>
+    <body>
+    <h1>NILM API</h1>
+    <ul>
+      <li><a href='/overview'>/overview</a> – Dashboard</li>
+      <li><a href='/viz'>/viz</a> – Quick viz</li>
+      <li><a href='/clusters'>/clusters</a></li>
+      <li><a href='/devices'>/devices</a></li>
+      <li><a href='/sessions'>/sessions</a></li>
+      <li><a href='/autolabel'>/autolabel</a> (GET dry-run)</li>
+      <li><a href='/docs'>/docs</a> – OpenAPI</li>
+    </ul>
+    </body></html>
+    """)
