@@ -227,8 +227,36 @@ class LabelIn(BaseModel):
 
 @router.post("/labels", summary="Persist a manual label for a cluster")
 def set_label(body: LabelIn):
+    """Voeg of overschrijf een label voor een cluster.
+
+    Voorbeeld body:
+    {
+      "cluster": 3,
+      "label": "Quooker",
+      "confidence": 0.9
+    }
+
+    Het clusternummer vind je via /clusters (veld 'cluster') of via /devices.
+    """
     cl = _label_store.set(cluster=body.cluster, label=body.label, source="manual", confidence=body.confidence)
     return {"ok": True, "label": cl.to_dict()}
+
+
+@router.get("/labels", summary="Lijst van alle opgeslagen labels")
+def list_labels():
+    out = []
+    for cid, cl in _label_store.all().items():
+        d = cl.to_dict()
+        d["cluster"] = cid
+        out.append(d)
+    out.sort(key=lambda x: x["cluster"])
+    return {"count": len(out), "labels": out}
+
+
+@router.delete("/labels/{cluster}", summary="Verwijder een label voor een cluster")
+def delete_label(cluster: int):
+    ok = _label_store.delete(cluster)
+    return {"ok": ok, "cluster": cluster}
 
 
 @router.get("/devices", summary="Aggregated per-device (cluster) energy usage over a window")

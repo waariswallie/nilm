@@ -71,6 +71,14 @@ class LabelStore:
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
         tmp.replace(self.path)
 
+    def delete(self, cluster: int) -> bool:
+        self._load()
+        if cluster in self._cache:
+            del self._cache[cluster]
+            self._persist()
+            return True
+        return False
+
 
 def enrich_cluster_stats(stats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Add ratios for heuristic rules: active_hours_ratio, evening_ratio."""
