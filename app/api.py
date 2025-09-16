@@ -61,7 +61,9 @@ def status() -> Dict[str, Any]:
 
 
 @router.get("/scan")
-def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
+def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30),
+         eps: float | None = Query(default=None, description="Override DBSCAN eps"),
+         min_samples: int | None = Query(default=None, ge=1, description="Override DBSCAN min_samples")):
     # Enforce hard cap 30 days
     if last_days > 30:
         last_days = 30
@@ -105,7 +107,7 @@ def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
         )
     ef = build_event_frame(evts)
     if not ef.empty:
-        ef = cluster_events(ef)
+        ef = cluster_events(ef, eps=eps, min_samples=min_samples)
 
     base = nightly_baseload(df)
     # Sanitize for JSON (remove NaN/inf)
@@ -153,7 +155,9 @@ def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
 
 
 @router.get("/events", summary="List recent events with optional limit & days")
-def events_endpoint(last_days: int = Query(default=7, ge=1, le=30), limit: int = Query(default=200, ge=1, le=2000)):
+def events_endpoint(last_days: int = Query(default=7, ge=1, le=30), limit: int = Query(default=200, ge=1, le=2000),
+                    eps: float | None = Query(default=None),
+                    min_samples: int | None = Query(default=None, ge=1)):
     start_dt = datetime.utcnow() - timedelta(days=last_days)
     start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
     df = fetch_minute_power(start_ts=start_iso)
@@ -165,7 +169,7 @@ def events_endpoint(last_days: int = Query(default=7, ge=1, le=30), limit: int =
     )
     ef = build_event_frame(evts)
     if not ef.empty:
-        ef = cluster_events(ef)
+        ef = cluster_events(ef, eps=eps, min_samples=min_samples)
     out = []
     if not ef.empty:
         for r in ef.tail(limit).to_dict(orient="records"):
@@ -176,7 +180,9 @@ def events_endpoint(last_days: int = Query(default=7, ge=1, le=30), limit: int =
 
 
 @router.get("/clusters", summary="Cluster summaries with (suggested) labels")
-def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30)):
+def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30),
+                      eps: float | None = Query(default=None),
+                      min_samples: int | None = Query(default=None, ge=1)):
     start_dt = datetime.utcnow() - timedelta(days=last_days)
     start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
     df = fetch_minute_power(start_ts=start_iso)
@@ -189,7 +195,7 @@ def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30)):
     ef = build_event_frame(evts)
     if ef.empty:
         return {"clusters": []}
-    ef = cluster_events(ef)
+    ef = cluster_events(ef, eps=eps, min_samples=min_samples)
     cluster_stats = []
     if "cluster" in ef.columns:
         for cid, g in ef.groupby("cluster", dropna=False):
@@ -218,7 +224,9 @@ def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30)):
 
 
 @router.post("/autolabel", summary="Automatisch labels toepassen op clusters op basis van heuristieken")
-def autolabel_endpoint(last_days: int = Query(default=7, ge=1, le=30), overwrite: bool = False):
+def autolabel_endpoint(last_days: int = Query(default=7, ge=1, le=30), overwrite: bool = False,
+                       eps: float | None = Query(default=None),
+                       min_samples: int | None = Query(default=None, ge=1)):
     # Reuse clustering logic
     start_dt = datetime.utcnow() - timedelta(days=last_days)
     start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
@@ -232,7 +240,7 @@ def autolabel_endpoint(last_days: int = Query(default=7, ge=1, le=30), overwrite
     ef = build_event_frame(evts)
     if ef.empty:
         return {"applied": [], "skipped": [], "clusters": []}
-    ef = cluster_events(ef)
+    ef = cluster_events(ef, eps=eps, min_samples=min_samples)
     cluster_stats = []
     if "cluster" in ef.columns:
         for cid, g in ef.groupby("cluster", dropna=False):
@@ -260,7 +268,9 @@ def autolabel_endpoint(last_days: int = Query(default=7, ge=1, le=30), overwrite
 
 # Extra alias zodat je met GET kunt testen of de route bestaat zonder iets te veranderen.
 @router.get("/autolabel", summary="Alias van POST /autolabel (dry-run)")
-def autolabel_get(last_days: int = Query(default=7, ge=1, le=30)):
+def autolabel_get(last_days: int = Query(default=7, ge=1, le=30),
+                  eps: float | None = Query(default=None),
+                  min_samples: int | None = Query(default=None, ge=1)):
     # Voer dezelfde logica uit maar persist niet: we roepen autolabel_endpoint aan met overwrite=False
     # en daarna laden we labels opnieuw zodat we een consistent antwoord hebben.
     # Omdat autolabel_endpoint sowieso persist doet, maken we hier een 'dry run' variant die GEEN opslag doet.
@@ -276,7 +286,7 @@ def autolabel_get(last_days: int = Query(default=7, ge=1, le=30)):
     ef = build_event_frame(evts)
     if ef.empty:
         return {"lookback_days": last_days, "applied": [], "skipped": [], "clusters": []}
-    ef = cluster_events(ef)
+    ef = cluster_events(ef, eps=eps, min_samples=min_samples)
     cluster_stats = []
     if "cluster" in ef.columns:
         for cid, g in ef.groupby("cluster", dropna=False):
@@ -346,7 +356,10 @@ def delete_label(cluster: int):
 
 
 @router.get("/devices", summary="Aggregated per-device (cluster) energy usage over a window")
-def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noise: bool = False):
+def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noise: bool = False,
+                     merge_labels: bool = Query(default=True, description="Combine clusters met hetzelfde label"),
+                     eps: float | None = Query(default=None),
+                     min_samples: int | None = Query(default=None, ge=1)):
     """Return an approximate energy usage overview per detected (labeled) device.
 
     Energy is estimated from event rectangle (ΔP * duration). For multi-cycle devices (bv. wasmachine)
@@ -364,7 +377,7 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
     ef = build_event_frame(evts)
     if ef.empty:
         return {"devices": [], "total_event_energy_kWh": 0.0, "from": start_iso, "to": datetime.utcnow().isoformat(), "lookback_days": last_days}
-    ef = cluster_events(ef)
+    ef = cluster_events(ef, eps=eps, min_samples=min_samples)
 
     # Aggregate per cluster
     clusters = {}
@@ -397,23 +410,75 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
     # Build device list
     total_energy_all = sum(d.get("total_energy_kWh", 0.0) for d in enriched)
     devices_out = []
-    for d in enriched:
-        label = d.get("label") or d.get("suggested_label") or f"Cluster {d['cluster']}"
-        source = d.get("label_source") or ("suggested" if d.get("suggested_label") else None)
-        share = (d.get("total_energy_kWh", 0.0) / total_energy_all * 100.0) if total_energy_all > 0 else 0.0
-        devices_out.append({
-            "name": label,
-            "cluster": d["cluster"],
-            "source": source,
-            "events": d["events"],
-            "avg_dP_kW": d["avg_dP_kW"],
-            "median_duration_min": d["median_duration_min"],
-            "total_energy_kWh": round(d.get("total_energy_kWh", 0.0), 4),
-            "avg_event_energy_kWh": round(d.get("avg_event_energy_kWh", 0.0), 4),
-            "energy_share_pct": round(share, 2),
-            "first_seen": d.get("first_seen"),
-            "last_seen": d.get("last_seen"),
-        })
+
+    if merge_labels:
+        # Merge clusters that share the same resolved label (manual > rule > suggestion)
+        merged: Dict[str, Dict[str, Any]] = {}
+        for d in enriched:
+            resolved_label = d.get("label") or d.get("suggested_label") or f"Cluster {d['cluster']}"
+            source = d.get("label_source") or ("suggested" if d.get("suggested_label") else None)
+            key = resolved_label
+            if key not in merged:
+                merged[key] = {
+                    "name": resolved_label,
+                    "clusters": [d["cluster"]],
+                    "source": source,
+                    "events": d["events"],
+                    "total_energy_kWh": d.get("total_energy_kWh", 0.0),
+                    "avg_dP_kW_acc": d["avg_dP_kW"] * d["events"],  # weighted sum
+                    "median_durations": [d["median_duration_min"]],
+                    "first_seen": d.get("first_seen"),
+                    "last_seen": d.get("last_seen"),
+                }
+            else:
+                m = merged[key]
+                m["clusters"].append(d["cluster"])
+                m["events"] += d["events"]
+                m["total_energy_kWh"] += d.get("total_energy_kWh", 0.0)
+                m["avg_dP_kW_acc"] += d["avg_dP_kW"] * d["events"]
+                # update span
+                if d.get("first_seen") and (m["first_seen"] is None or d["first_seen"] < m["first_seen"]):
+                    m["first_seen"] = d["first_seen"]
+                if d.get("last_seen") and (m["last_seen"] is None or d["last_seen"] > m["last_seen"]):
+                    m["last_seen"] = d["last_seen"]
+                m["median_durations"].append(d["median_duration_min"])
+        # finalize
+        for key, m in merged.items():
+            avg_dP = m["avg_dP_kW_acc"] / m["events"] if m["events"] else 0.0
+            share = (m["total_energy_kWh"] / total_energy_all * 100.0) if total_energy_all > 0 else 0.0
+            devices_out.append({
+                "name": m["name"],
+                "clusters": m["clusters"],
+                "source": m["source"],
+                "events": m["events"],
+                "avg_dP_kW": round(avg_dP, 4),
+                "median_duration_min": float(np.median(m["median_durations"])) if m["median_durations"] else 0.0,
+                "total_energy_kWh": round(m["total_energy_kWh"], 4),
+                "avg_event_energy_kWh": round(m["total_energy_kWh"] / m["events"], 4) if m["events"] else 0.0,
+                "energy_share_pct": round(share, 2),
+                "first_seen": m.get("first_seen"),
+                "last_seen": m.get("last_seen"),
+                "merged": True,
+            })
+    else:
+        for d in enriched:
+            label = d.get("label") or d.get("suggested_label") or f"Cluster {d['cluster']}"
+            source = d.get("label_source") or ("suggested" if d.get("suggested_label") else None)
+            share = (d.get("total_energy_kWh", 0.0) / total_energy_all * 100.0) if total_energy_all > 0 else 0.0
+            devices_out.append({
+                "name": label,
+                "cluster": d["cluster"],
+                "source": source,
+                "events": d["events"],
+                "avg_dP_kW": d["avg_dP_kW"],
+                "median_duration_min": d["median_duration_min"],
+                "total_energy_kWh": round(d.get("total_energy_kWh", 0.0), 4),
+                "avg_event_energy_kWh": round(d.get("avg_event_energy_kWh", 0.0), 4),
+                "energy_share_pct": round(share, 2),
+                "first_seen": d.get("first_seen"),
+                "last_seen": d.get("last_seen"),
+                "merged": False,
+            })
 
     # Sort by energy desc
     devices_out.sort(key=lambda x: x["total_energy_kWh"], reverse=True)

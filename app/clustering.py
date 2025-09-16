@@ -35,7 +35,7 @@ def build_event_frame(events) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def cluster_events(df_features: pd.DataFrame) -> pd.DataFrame:
+def cluster_events(df_features: pd.DataFrame, eps: float | None = None, min_samples: int | None = None) -> pd.DataFrame:
     if df_features.empty:
         df_features["cluster"] = []
         return df_features
@@ -48,6 +48,8 @@ def cluster_events(df_features: pd.DataFrame) -> pd.DataFrame:
     feats["weekday"] = feats["weekday"] / 6.0
     X = feats.to_numpy()
     Xs = StandardScaler().fit_transform(X)
-    model = DBSCAN(eps=settings.cluster_eps, min_samples=settings.cluster_min_samples).fit(Xs)
+    use_eps = eps if eps is not None else settings.cluster_eps
+    use_min_samples = min_samples if min_samples is not None else settings.cluster_min_samples
+    model = DBSCAN(eps=use_eps, min_samples=use_min_samples).fit(Xs)
     df_features["cluster"] = model.labels_
     return df_features
