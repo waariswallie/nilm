@@ -157,8 +157,10 @@ def _build_rules(stat: Dict[str, Any], extended: bool) -> List[Tuple[str, float,
     # EV-lader: heel hoog, lange duur, veel 's nachts
     rules.append(("EV-lader", 0.9, "zeer hoog vermogen lange nacht-duren", dP_max >= 3.0 and dur >= 60 and night_ratio > 0.4))
     # Quooker / Waterkoker (Quooker al bekend)
-    rules.append(("Quooker", 0.9, "hoge ΔP, korte duur", 1.5 <= dp <= 2.5 and dur < 8 and active_hours_ratio > 0.3))
-    rules.append(("Waterkoker", 0.6, "korte hoge pieken", 2.0 <= dP_max <= 3.5 and dur < 5 and pulses_per_day >= 1 and cnt >= 3))
+    # Quooker: korte hoge pieken rond 1.6–2.5 kW, meestal 1–5 min
+    rules.append(("Quooker", 0.9, "hoge ΔP, korte duur", 1.5 <= dp <= 2.5 and dur < 8))
+    # Waterkoker: iets lagere piek dan vaak gedacht; laat dP_max vanaf ~1.6 toe
+    rules.append(("Waterkoker", 0.6, "korte hoge pieken", 1.6 <= dP_max <= 3.5 and dur < 5 and cnt >= 3))
     # Oven vs Inductie
     rules.append(("Oven", 0.7, "stabiele hoge ΔP lange duur", 1.5 <= dp <= 3.5 and 20 <= dur <= 120 and dP_std < 0.25 and evening_ratio > 0.25))
     rules.append(("Inductie", 0.65, "hoge variatie korte avondduur", dP_max >= 2.5 and dP_std >= 0.5 and dur < 25 and evening_ratio > 0.4))
@@ -171,6 +173,8 @@ def _build_rules(stat: Dict[str, Any], extended: bool) -> List[Tuple[str, float,
     # Koelkast / vriezer (heel veel korte, kleine pulsen)
     rules.append(("Koelkast/Vriezer", 0.55, "kleine korte frequente pulsen", 0.03 <= dp <= 0.15 and dur <= 25 and pulses_per_day >= 20 and active_hours_ratio > 0.7))
     if extended:
+        # Quooker variant die sterk op avond zit (geen active_hours vereiste)
+        rules.append(("Quooker", 0.85, "avond hoge ΔP korte duur", 1.5 <= dp <= 2.5 and dur < 8 and evening_ratio > 0.4))
         rules.append(("Vaatwasser-alt", 0.55, "avond + hoge piek (dp_max)", dP_max >= 1.6 and dp < 1.5 and 8 <= dur <= 60 and evening_ratio > 0.4))
         rules.append(("Wasmachine-lang", 0.55, "lage-middellange ΔP lange median", 0.3 <= dp <= 1.2 and 30 <= dur <= 140 and pulses_per_day <= 6))
         rules.append(("Standby-blok", 0.5, "laag verbruik breed actief", 0.05 <= dp <= 0.25 and dur >= 30 and active_hours_ratio >= 0.8 and cnt >= 5))
