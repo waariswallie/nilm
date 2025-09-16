@@ -182,20 +182,64 @@ def events_endpoint(last_days: int = Query(default=7, ge=1, le=30), limit: int =
 @router.get("/clusters", summary="Cluster summaries with (suggested) labels")
 def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30),
                       eps: float | None = Query(default=None),
-                      min_samples: int | None = Query(default=None, ge=1)):
+                      min_samples: int | None = Query(default=None, ge=1),
+                      watt_threshold: float | None = Query(default=None, description="Override event watt threshold (W)"),
+                      min_dur: int | None = Query(default=None, description="Override min event duration (minutes)"),
+                      recluster_noise: bool = Query(default=False, description="Voer tweede clustering uit op noise (-1)"),
+                      noise_eps: float | None = Query(default=None, description="DBSCAN eps voor noise re-cluster"),
+                      noise_min_samples: int | None = Query(default=None, ge=1, description="DBSCAN min_samples voor noise re-cluster")):
     start_dt = datetime.utcnow() - timedelta(days=last_days)
     start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
     df = fetch_minute_power(start_ts=start_iso)
     evts = detect_events(
         df,
-        watt_threshold=settings.event_watt_threshold,
-        min_dur=settings.min_event_duration_min,
+        watt_threshold=watt_threshold or settings.event_watt_threshold,
+        min_dur=min_dur or settings.min_event_duration_min,
         max_dur=settings.max_event_duration_min,
     )
     ef = build_event_frame(evts)
     if ef.empty:
         return {"clusters": []}
     ef = cluster_events(ef, eps=eps, min_samples=min_samples)
+
+    note_parts = []
+    if recluster_noise and "cluster" in ef.columns and (ef["cluster"] == -1).any():
+        noise_idx = ef.index[ef["cluster"] == -1]
+        noise_df = ef.loc[noise_idx].copy()
+        noise_df = noise_df.drop(columns=["cluster"], errors="ignore")
+        if not noise_df.empty:
+            base_eps = eps if eps is not None else settings.cluster_eps
+            base_min = min_samples if min_samples is not None else settings.cluster_min_samples
+            re_eps = noise_eps if noise_eps is not None else base_eps * 1.3
+            re_min = noise_min_samples if noise_min_samples is not None else max(3, base_min // 2)
+            # Zorg dat noise_df zeker een DataFrame is
+            import pandas as _pd  # local import to avoid top-level cost
+            if not isinstance(noise_df, _pd.DataFrame):
+                noise_df = _pd.DataFrame(noise_df)
+            noise_df = noise_df.copy()
+            reclustered = cluster_events(noise_df, eps=re_eps, min_samples=re_min)
+            # Bepaal hoogste bestaande cluster (excl -1)
+            existing_non_noise = ef.loc[ef["cluster"] != -1, "cluster"]
+            if not existing_non_noise.empty:
+                try:
+                    max_val = existing_non_noise.max()
+                    max_cluster_existing = int(max_val) if isinstance(max_val, (int, float)) else -1
+                except Exception:
+                    max_cluster_existing = -1
+            else:
+                max_cluster_existing = -1
+            next_id = max_cluster_existing + 1
+            replaced = 0
+            for i in reclustered.index:
+                subc = reclustered.at[i, "cluster"]
+                if subc == -1:
+                    continue
+                ef.at[i, "cluster"] = next_id + int(subc)
+                replaced += 1
+            if replaced:
+                note_parts.append(f"noise re-clustered: {replaced} events uit -1 verplaatst (eps={re_eps:.3f}, min_samples={re_min})")
+            else:
+                note_parts.append("noise re-cluster poging gaf geen extra clusters")
     cluster_stats = []
     if "cluster" in ef.columns:
         for cid, g in ef.groupby("cluster", dropna=False):
@@ -216,11 +260,18 @@ def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30),
                 "avg_dP_kW": float(g["dP_on_kW"].mean()),
                 "median_duration_min": float(g["duration_min"].median() if g["duration_min"].notna().any() else 0),
                 "avg_energy_kWh": float(g["energy_kWh"].mean()) if g["energy_kWh"].notna().any() else None,
+                "dP_min_kW": float(g["dP_on_kW"].min()),
+                "dP_max_kW": float(g["dP_on_kW"].max()),
+                "duration_min_min": float(g["duration_min"].min() if g["duration_min"].notna().any() else 0),
+                "duration_min_max": float(g["duration_min"].max() if g["duration_min"].notna().any() else 0),
                 "hours": hours,
             })
     cluster_stats = enrich_cluster_stats(cluster_stats)
     enriched = apply_suggestions(cluster_stats, _label_store)
-    return {"clusters": enriched}
+    note = None
+    if note_parts:
+        note = "; ".join(note_parts)
+    return {"clusters": enriched, "note": note}
 
 
 @router.post("/autolabel", summary="Automatisch labels toepassen op clusters op basis van heuristieken")
