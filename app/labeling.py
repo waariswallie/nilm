@@ -3,7 +3,7 @@ import json
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import math
 
 
@@ -99,7 +99,8 @@ def suggest_label(stat: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Heuristic label suggestions based on aggregated cluster stats.
 
     Expected keys: cluster, avg_dP_kW, median_duration_min, count, evening_ratio, active_hours_ratio.
-    Returns suggestion dict or None.
+    Returns suggestion dict: {label, confidence, reason} or None.
+    Priority order matters: first matching rule is returned.
     """
     cid = stat.get("cluster")
     if cid in (-1, None):  # skip noise
@@ -109,21 +110,23 @@ def suggest_label(stat: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     cnt = stat.get("count", 0)
     evening_ratio = stat.get("evening_ratio", 0.0)
     active_hours_ratio = stat.get("active_hours_ratio", 0.0)
-
-    # Rules (simple initial set)
-    # Quooker: high dp ~1.5-2.3 kW, short duration (<6), widely distributed hours
-    if 1.5 <= dp <= 2.3 and dur < 6 and active_hours_ratio > 0.4:
-        return {"label": "Quooker", "confidence": 0.85, "reason": "dp & short & many hours"}
-    # Droger (warmtepomp/laag): dp 0.4-0.9, long median (>40)
-    if 0.4 <= dp <= 0.95 and dur >= 40 and cnt <= 50:
-        return {"label": "Droger", "confidence": 0.7, "reason": "low dp long"}
-    # Vaatwasser: dp 1.6-2.4, median 8-25, avond georienteerd
-    if 1.6 <= dp <= 2.4 and 8 <= dur <= 25 and evening_ratio > 0.4:
-        return {"label": "Vaatwasser", "confidence": 0.65, "reason": "evening heating pulses"}
-    # Wasmachine heating pulse: dp 1.2-2.2, median 5-20, mid active hours
-    if 1.2 <= dp <= 2.2 and 5 <= dur <= 20 and active_hours_ratio > 0.25 and evening_ratio < 0.5:
-        return {"label": "Wasmachine-pulse", "confidence": 0.55, "reason": "mid dp heating"}
-
+    # Rule order defines priority
+    rules: List[Tuple[str, float, str, bool]] = []
+    # Quooker / waterkoker (korte hoge pieken)
+    rules.append(("Quooker", 0.9, "hoge ΔP, korte duur", 1.5 <= dp <= 2.5 and dur < 8 and active_hours_ratio > 0.3))
+    # Droger (warmtepomp) langere runs (geclusterd tot pulses) -> langere median
+    rules.append(("Droger-lang", 0.75, "lage ΔP lange duur", 0.4 <= dp <= 1.05 and dur >= 30 and cnt >= 5))
+    # Droger korte modulatie blokken
+    rules.append(("Droger-pulse", 0.7, "lage ΔP middellange duur", 0.4 <= dp <= 1.05 and 8 <= dur < 30 and cnt >= 8))
+    # Vaatwasser heating (avond georienteerd)
+    rules.append(("Vaatwasser", 0.68, "avond heating pulses", 1.5 <= dp <= 2.5 and 8 <= dur <= 40 and evening_ratio > 0.35))
+    # Wasmachine heating pulse
+    rules.append(("Wasmachine-pulse", 0.6, "mid ΔP korte-middellange duur", 1.1 <= dp <= 2.2 and 5 <= dur <= 25 and evening_ratio < 0.55 and active_hours_ratio > 0.25))
+    # Onbekend groot apparaat (fallback high)
+    rules.append(("Hoog-vermogen-onbekend", 0.4, "hoge ΔP maar geen andere match", dp > 2.5 and dur >= 4))
+    for label, conf, reason, cond in rules:
+        if cond:
+            return {"label": label, "confidence": conf, "reason": reason}
     return None
 
 
@@ -152,3 +155,31 @@ def apply_suggestions(stats: List[Dict[str, Any]], store: LabelStore) -> List[Di
             s_out["suggested_reason"] = suggestion["reason"]
         enriched.append(s_out)
     return enriched
+
+
+def auto_label_clusters(stats: List[Dict[str, Any]], store: LabelStore, overwrite: bool = False) -> Dict[str, Any]:
+    """Persist suggestions into label store.
+
+    Returns dict with applied & skipped lists.
+    overwrite=False will not replace existing manual labels.
+    """
+    applied: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    for s in stats:
+        cid_raw = s.get("cluster")
+        if cid_raw in (-1, None):
+            continue
+        try:
+            cid = int(cid_raw)
+        except Exception:  # noqa: BLE001
+            continue
+        existing = store.get(cid)
+        suggestion = suggest_label(s)
+        if not suggestion:
+            continue
+        if existing and not overwrite and existing.source == "manual":
+            skipped.append({"cluster": cid, "label": existing.label, "reason": "manual_exists"})
+            continue
+        cl = store.set(cluster=cid, label=suggestion["label"], source="rule", confidence=suggestion.get("confidence"))
+        applied.append({"cluster": cid, "label": cl.label, "confidence": cl.confidence, "reason": suggestion.get("reason")})
+    return {"applied": applied, "skipped": skipped}

@@ -10,7 +10,7 @@ from .preprocessing import clean_series
 from .events import detect_events
 from .clustering import build_event_frame, cluster_events
 from .baseload import nightly_baseload
-from .labeling import LabelStore, enrich_cluster_stats, apply_suggestions
+from .labeling import LabelStore, enrich_cluster_stats, apply_suggestions, auto_label_clusters
 from .sessions import group_sessions
 import numpy as np
 
@@ -215,6 +215,47 @@ def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30)):
     cluster_stats = enrich_cluster_stats(cluster_stats)
     enriched = apply_suggestions(cluster_stats, _label_store)
     return {"clusters": enriched}
+
+
+@router.post("/autolabel", summary="Automatisch labels toepassen op clusters op basis van heuristieken")
+def autolabel_endpoint(last_days: int = Query(default=7, ge=1, le=30), overwrite: bool = False):
+    # Reuse clustering logic
+    start_dt = datetime.utcnow() - timedelta(days=last_days)
+    start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
+    df = fetch_minute_power(start_ts=start_iso)
+    evts = detect_events(
+        df,
+        watt_threshold=settings.event_watt_threshold,
+        min_dur=settings.min_event_duration_min,
+        max_dur=settings.max_event_duration_min,
+    )
+    ef = build_event_frame(evts)
+    if ef.empty:
+        return {"applied": [], "skipped": [], "clusters": []}
+    ef = cluster_events(ef)
+    cluster_stats = []
+    if "cluster" in ef.columns:
+        for cid, g in ef.groupby("cluster", dropna=False):
+            hours = list(g["t_on"].dt.hour) if "t_on" in g else []
+            if cid is None:
+                cid_int = -1
+            else:
+                try:
+                    cid_int = int(str(cid))
+                except Exception:
+                    cid_int = -1
+            cluster_stats.append({
+                "cluster": cid_int,
+                "count": int(len(g)),
+                "avg_dP_kW": float(g["dP_on_kW"].mean()),
+                "median_duration_min": float(g["duration_min"].median() if g["duration_min"].notna().any() else 0),
+                "avg_energy_kWh": float(g["energy_kWh"].mean()) if g["energy_kWh"].notna().any() else None,
+                "hours": hours,
+            })
+    cluster_stats = enrich_cluster_stats(cluster_stats)
+    result = auto_label_clusters(cluster_stats, _label_store, overwrite=overwrite)
+    enriched = apply_suggestions(cluster_stats, _label_store)
+    return {"lookback_days": last_days, **result, "clusters": enriched}
 
 
 from pydantic import BaseModel
