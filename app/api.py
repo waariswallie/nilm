@@ -11,6 +11,7 @@ from .events import detect_events
 from .clustering import build_event_frame, cluster_events
 from .baseload import nightly_baseload
 from .labeling import LabelStore, enrich_cluster_stats, apply_suggestions
+from .sessions import group_sessions
 import numpy as np
 
 router = APIRouter()
@@ -339,6 +340,58 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
         "total_event_energy_kWh": round(total_energy_all, 4),
         "devices": devices_out,
         "note": "Energy per event = dP * duration (rectangle). Lange cycli met meerdere heating pulses (bv. wasmachine) worden als losse events getoond.",
+    }
+
+
+@router.get("/sessions", summary="Gegroepeerde apparaat-runs (sessions) op basis van events")
+def sessions_endpoint(last_days: int = Query(default=7, ge=1, le=30),
+                      max_gap_min: int = Query(default=15, ge=1, le=120),
+                      min_energy_kwh: float = Query(default=0.0, ge=0.0),
+                      min_events: int = Query(default=2, ge=1, le=500),
+                      clusters: str | None = Query(default=None, description="Komma lijst van cluster ids")):
+    start_dt = datetime.utcnow() - timedelta(days=last_days)
+    start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
+    df = fetch_minute_power(start_ts=start_iso)
+    evts = detect_events(
+        df,
+        watt_threshold=settings.event_watt_threshold,
+        min_dur=settings.min_event_duration_min,
+        max_dur=settings.max_event_duration_min,
+    )
+    ef = build_event_frame(evts)
+    if ef.empty:
+        return {"sessions": [], "count": 0}
+    ef = cluster_events(ef)
+    cluster_filter = None
+    if clusters:
+        try:
+            cluster_filter = [int(x.strip()) for x in clusters.split(',') if x.strip()]
+        except Exception:  # noqa: BLE001
+            cluster_filter = None
+    sessions = group_sessions(ef, max_gap_min=max_gap_min, clusters=cluster_filter,
+                              min_session_energy_kWh=min_energy_kwh, min_events=min_events)
+    # Label enrichment
+    for s in sessions:
+        cid = s.get("cluster")
+        lbl = _label_store.get(cid) if cid is not None else None
+        if lbl:
+            s["label"] = lbl.label
+            s["label_source"] = lbl.source
+    # Sort by energy desc
+    sessions.sort(key=lambda x: x.get("total_energy_kWh", 0), reverse=True)
+    total_sessions_energy = sum(s.get("total_energy_kWh", 0) for s in sessions)
+    for s in sessions:
+        te = s.get("total_energy_kWh", 0)
+        s["energy_share_pct"] = round((te / total_sessions_energy * 100.0), 2) if total_sessions_energy > 0 else 0.0
+    return {
+        "lookback_days": last_days,
+        "from": df.index.min().isoformat() if not df.empty else start_iso,
+        "to": df.index.max().isoformat() if not df.empty else datetime.utcnow().isoformat(),
+        "max_gap_min": max_gap_min,
+        "count": len(sessions),
+        "total_sessions_energy_kWh": round(total_sessions_energy, 4),
+        "sessions": sessions,
+        "note": "Sessions = samenvoegen van events per cluster zolang de gap <= max_gap_min; open events genegeerd.",
     }
 
 
