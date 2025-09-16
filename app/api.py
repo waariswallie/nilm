@@ -262,6 +262,8 @@ def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30),
                 "avg_dP_kW": float(g["dP_on_kW"].mean()),
                 "median_duration_min": float(g["duration_min"].median() if g["duration_min"].notna().any() else 0),
                 "avg_energy_kWh": float(g["energy_kWh"].mean()) if g["energy_kWh"].notna().any() else None,
+                "total_energy_kWh": float(g["energy_kWh"].sum()) if g["energy_kWh"].notna().any() else None,
+                "avg_event_energy_kWh": float(g["energy_kWh"].mean()) if g["energy_kWh"].notna().any() else None,
                 "dP_min_kW": float(g["dP_on_kW"].min()),
                 "dP_max_kW": float(g["dP_on_kW"].max()),
                 "duration_min_min": float(g["duration_min"].min() if g["duration_min"].notna().any() else 0),
@@ -730,3 +732,140 @@ load();
     """
     html = html.replace("__DAYS__", str(days)).replace("__GEN_AT__", datetime.utcnow().isoformat()+"Z")
     return HTMLResponse(content=html)
+
+
+@router.get("/overview", response_class=HTMLResponse, summary="Unified dashboard (clusters, devices, sessions)")
+def overview(last_days: int = Query(default=7, ge=1, le=30), feature_set: str = Query(default="extended", pattern="^(basic|extended)$")):
+        html = """
+<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+<meta charset=\"utf-8\" />
+<title>NILM Overview</title>
+<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />
+<style>
+body{font-family:system-ui,Arial,sans-serif;background:#101317;color:#e6e8ea;margin:0;padding:1rem 1.25rem 3rem}
+h1{margin:.2rem 0 1rem;font-size:1.5rem}
+h2{margin:1.5rem 0 .6rem;font-size:1.1rem}
+table{border-collapse:collapse;width:100%;font-size:.72rem}
+th,td{padding:4px 6px;border-bottom:1px solid #24303b;text-align:left;vertical-align:top}
+th{background:#182229;position:sticky;top:0}
+.tag{display:inline-block;background:#24303b;padding:2px 6px;border-radius:4px;margin:2px;font-size:.65rem}
+.grid{display:grid;gap:1.2rem;grid-template-columns:repeat(auto-fill,minmax(340px,1fr))}
+.card{background:#161d23;padding:.9rem 1rem;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.5)}
+.warn{color:#ffa94d}
+input,select{background:#202a31;color:#e6e8ea;border:1px solid #32414d;padding:4px 6px;border-radius:4px}
+.small{font-size:.65rem;opacity:.7}
+code{background:#1e272e;padding:2px 4px;border-radius:4px}
+</style>
+<script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js\"></script>
+</head>
+<body>
+ <h1>NILM Overview</h1>
+ <div style=\"margin-bottom:1rem\">Laatste <b id=\"daysLbl\"></b> dagen · Feature set <b id=\"fsLbl\"></b> · <label>Wijzig dagen <input id=\"daysInput\" type=number min=1 max=30 style=width:70px></label> <label style=margin-left:.5rem>Feature <select id=\"featureSetSel\"><option value=basic>basic</option><option value=extended selected>extended</option></select></label> <button id=\"reloadBtn\">Herlaad</button> · <a href=\"/docs\">API docs</a></div>
+ <div class=\"grid\">
+    <div class=card>
+     <h2>Clusters</h2>
+     <canvas id=clusterDonut height=200></canvas>
+     <table id=clustersTbl></table>
+    </div>
+    <div class=card>
+     <h2>Devices (geaggregeerd)</h2>
+     <canvas id=deviceBar height=220></canvas>
+     <table id=devicesTbl></table>
+    </div>
+    <div class=card>
+     <h2>Sessions (top 12 op energie)</h2>
+     <table id=sessionsTbl></table>
+    </div>
+    <div class=card>
+     <h2>Baseload (nacht)</h2>
+     <canvas id=baseLine height=200></canvas>
+    </div>
+ </div>
+ <p class=small>Tip: gebruik <code>/clusters?recluster_noise=true&noise_eps=...&noise_min_samples=...</code> voor fijnmazige splitsing. Deze pagina haalt nu losse API calls parallel op.</p>
+ <div class=small id=foot></div>
+<script>
+const days = Number(new URLSearchParams(location.search).get('last_days')||%DAYS%);
+const featureSet = new URLSearchParams(location.search).get('feature_set') || '%FEATURE_SET%';
+document.getElementById('daysInput').value = days;
+document.getElementById('featureSetSel').value = featureSet;
+document.getElementById('daysLbl').textContent = days;
+document.getElementById('fsLbl').textContent = featureSet;
+document.getElementById('reloadBtn').onclick = () => {
+    const d = document.getElementById('daysInput').value || days;
+    const fs = document.getElementById('featureSetSel').value;
+    location.search = '?last_days='+d+'&feature_set='+fs;
+};
+
+function fmt(v,dec=2){ if(v==null||isNaN(v)) return ''; return Number(v).toFixed(dec); }
+
+async function fetchJson(url){ const r = await fetch(url); if(!r.ok) throw new Error(url+' -> '+r.status); return r.json(); }
+
+async function load(){
+    try {
+        const [clusters, devices, sessions, scan] = await Promise.all([
+            fetchJson(`/clusters?last_days=${days}&feature_set=${featureSet}`),
+            fetchJson(`/devices?last_days=${days}&feature_set=${featureSet}`),
+            fetchJson(`/sessions?last_days=${days}`),
+            fetchJson(`/scan?last_days=${days}`)
+        ]);
+        renderClusters(clusters.clusters||[]);
+        renderDevices(devices.devices||[]);
+        renderSessions(sessions.sessions||[]);
+        renderBaseload(scan.baseload||{});
+        document.getElementById('foot').textContent = 'Generated '+new Date().toISOString();
+    } catch(e){
+        document.body.innerHTML = '<h2>Load error</h2><pre>'+e+'</pre>';
+    }
+}
+
+function renderClusters(list){
+    const tbl = document.getElementById('clustersTbl');
+    if(!list.length){ tbl.innerHTML='<tr><td>Geen clusters</td></tr>'; return; }
+    list.sort((a,b)=> (b.total_energy_kWh||0)-(a.total_energy_kWh||0));
+    const head = '<tr><th>ID</th><th>Label</th><th>Count</th><th>ΔP avg</th><th>Dur med</th><th>E tot</th><th>E evt</th></tr>';
+    const rows = list.slice(0,50).map(c=>`<tr><td>${c.cluster}</td><td>${c.label||c.suggested_label||''}</td><td>${c.count}</td><td>${fmt(c.avg_dP_kW)}</td><td>${fmt(c.median_duration_min)}</td><td>${fmt(c.total_energy_kWh,3)}</td><td>${fmt(c.avg_event_energy_kWh,3)}</td></tr>`).join('');
+    tbl.innerHTML = head+rows;
+    // donut
+    const ctx = document.getElementById('clusterDonut');
+    const labels = list.map(c=>'C'+c.cluster);
+    const data = list.map(c=> c.total_energy_kWh||0);
+    new Chart(ctx,{type:'doughnut',data:{labels,datasets:[{data}]}});
+}
+
+function renderDevices(list){
+    const tbl = document.getElementById('devicesTbl');
+    if(!list.length){ tbl.innerHTML='<tr><td>Geen devices</td></tr>'; return; }
+    const head = '<tr><th>Naam</th><th>Clusters</th><th>Events</th><th>ΔP avg</th><th>E kWh</th><th>Share %</th></tr>';
+    const rows = list.slice(0,25).map(d=>`<tr><td>${d.name}</td><td>${(d.clusters||[d.cluster]).join(',')}</td><td>${d.events}</td><td>${fmt(d.avg_dP_kW)}</td><td>${fmt(d.total_energy_kWh,3)}</td><td>${fmt(d.energy_share_pct,1)}</td></tr>`).join('');
+    tbl.innerHTML = head+rows;
+    const ctx = document.getElementById('deviceBar');
+    const labels = list.map(d=> d.name);
+    const data = list.map(d=> d.total_energy_kWh);
+    new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'kWh',data}]},options:{scales:{y:{beginAtZero:true}}}});
+}
+
+function renderSessions(list){
+    const tbl = document.getElementById('sessionsTbl');
+    if(!list.length){ tbl.innerHTML='<tr><td>Geen sessions</td></tr>'; return; }
+    list.sort((a,b)=> (b.total_energy_kWh||0)-(a.total_energy_kWh||0));
+    const head = '<tr><th>Label</th><th>Cluster(s)</th><th>Events</th><th>Duur min</th><th>E kWh</th><th>%</th></tr>';
+    const rows = list.slice(0,12).map(s=>`<tr><td>${s.label||''}</td><td>${s.cluster}</td><td>${s.n_events}</td><td>${fmt(s.duration_min)}</td><td>${fmt(s.total_energy_kWh,3)}</td><td>${fmt(s.energy_share_pct,1)}</td></tr>`).join('');
+    tbl.innerHTML = head+rows;
+}
+
+function renderBaseload(base){
+    const labels = Object.keys(base).sort();
+    const vals = labels.map(k=> base[k]);
+    const ctx = document.getElementById('baseLine');
+    new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'kW',data:vals,tension:.25,borderColor:'#4ea3ff',backgroundColor:'rgba(78,163,255,0.15)',fill:true}]}});
+}
+
+load();
+</script>
+</body>
+</html>
+        """
+        html = html.replace('%DAYS%', str(last_days)).replace('%FEATURE_SET%', feature_set)
+        return HTMLResponse(content=html)
