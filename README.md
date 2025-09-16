@@ -142,7 +142,7 @@ tests/
 - [ ] ML disaggregation (seq2point / HMM)
 - [ ] Export & rapportage endpoints
 
-## CI/CD & Deploy (Raspberry Pi)
+## CI/CD & Deploy (Raspberry Pi) 
 Volledig automatische build & deploy bij iedere push naar `main` of `init` via één workflow: **Build and Deploy (Unified)**.
 
 ### Belangrijk over netwerk (timeout / i/o timeout)
