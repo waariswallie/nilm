@@ -121,91 +121,8 @@ def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
 
     base_dict = {str(k): safe(v) for k, v in base.tail(14).items()}
 
-    # Cluster summary
+    # Cluster summary for inline response
     cluster_summary = []
-
-
-    @router.get("/events", summary="List recent events with optional limit & days")
-    def events_endpoint(last_days: int = Query(default=7, ge=1, le=30), limit: int = Query(default=200, ge=1, le=2000)):
-        start_dt = datetime.utcnow() - timedelta(days=last_days)
-        start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
-        df = fetch_minute_power(start_ts=start_iso)
-        evts = detect_events(
-            df,
-            watt_threshold=settings.event_watt_threshold,
-            min_dur=settings.min_event_duration_min,
-            max_dur=settings.max_event_duration_min,
-        )
-        ef = build_event_frame(evts)
-        if not ef.empty:
-            ef = cluster_events(ef)
-        out = []
-        if not ef.empty:
-            for r in ef.tail(limit).to_dict(orient="records"):
-                # basic sanitation
-                r["t_on"] = r["t_on"].isoformat() if r.get("t_on") else None
-                r["t_off"] = r["t_off"].isoformat() if r.get("t_off") else None
-                out.append(r)
-        return {"count": len(out), "events": out}
-
-
-    @router.get("/clusters", summary="Cluster summaries with (suggested) labels")
-    def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30)):
-        start_dt = datetime.utcnow() - timedelta(days=last_days)
-        start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
-        df = fetch_minute_power(start_ts=start_iso)
-        evts = detect_events(
-            df,
-            watt_threshold=settings.event_watt_threshold,
-            min_dur=settings.min_event_duration_min,
-            max_dur=settings.max_event_duration_min,
-        )
-        ef = build_event_frame(evts)
-        if ef.empty:
-            return {"clusters": []}
-        ef = cluster_events(ef)
-        # Build stats per cluster with hour list
-        cluster_stats = []
-        if "cluster" in ef.columns:
-            for cid, g in ef.groupby("cluster", dropna=False):
-                hours = list(g["t_on"].dt.hour) if "t_on" in g else []
-                if cid is None:
-                    cid_int = -1
-                else:
-                    # DBSCAN labels normally ints; ensure robust cast
-                    if isinstance(cid, (int,)):
-                        cid_int = int(cid)
-                    else:
-                        try:
-                            cid_int = int(str(cid))
-                        except Exception:
-                            cid_int = -1
-                cluster_stats.append({
-                    "cluster": cid_int,
-                    "count": int(len(g)),
-                    "avg_dP_kW": float(g["dP_on_kW"].mean()),
-                    "median_duration_min": float(g["duration_min"].median() if g["duration_min"].notna().any() else 0),
-                    "avg_energy_kWh": float(g["energy_kWh"].mean()) if g["energy_kWh"].notna().any() else None,
-                    "hours": hours,
-                })
-        cluster_stats = enrich_cluster_stats(cluster_stats)
-        enriched = apply_suggestions(cluster_stats, _label_store)
-        return {"clusters": enriched}
-
-
-    from pydantic import BaseModel
-
-
-    class LabelIn(BaseModel):
-        cluster: int
-        label: str
-        confidence: float | None = None
-
-
-    @router.post("/labels", summary="Persist a manual label for a cluster")
-    def set_label(body: LabelIn):
-        cl = _label_store.set(cluster=body.cluster, label=body.label, source="manual", confidence=body.confidence)
-        return {"ok": True, "label": cl.to_dict()}
     if not ef.empty and "cluster" in ef.columns:
         grp = ef.groupby("cluster", dropna=False)
         for cid, g in grp:
@@ -222,8 +139,8 @@ def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
             })
 
     return {
-    "lookback_days": last_days,
-    "highres": use_highres,
+        "lookback_days": last_days,
+        "highres": use_highres,
         "from": df.index.min().isoformat() if not df.empty else None,
         "to": df.index.max().isoformat() if not df.empty else None,
         "n_points": int(len(df)),
@@ -232,6 +149,86 @@ def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
         "events": events_out,
         "clusters": cluster_summary,
     }
+
+
+@router.get("/events", summary="List recent events with optional limit & days")
+def events_endpoint(last_days: int = Query(default=7, ge=1, le=30), limit: int = Query(default=200, ge=1, le=2000)):
+    start_dt = datetime.utcnow() - timedelta(days=last_days)
+    start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
+    df = fetch_minute_power(start_ts=start_iso)
+    evts = detect_events(
+        df,
+        watt_threshold=settings.event_watt_threshold,
+        min_dur=settings.min_event_duration_min,
+        max_dur=settings.max_event_duration_min,
+    )
+    ef = build_event_frame(evts)
+    if not ef.empty:
+        ef = cluster_events(ef)
+    out = []
+    if not ef.empty:
+        for r in ef.tail(limit).to_dict(orient="records"):
+            r["t_on"] = r["t_on"].isoformat() if r.get("t_on") else None
+            r["t_off"] = r["t_off"].isoformat() if r.get("t_off") else None
+            out.append(r)
+    return {"count": len(out), "events": out}
+
+
+@router.get("/clusters", summary="Cluster summaries with (suggested) labels")
+def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30)):
+    start_dt = datetime.utcnow() - timedelta(days=last_days)
+    start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
+    df = fetch_minute_power(start_ts=start_iso)
+    evts = detect_events(
+        df,
+        watt_threshold=settings.event_watt_threshold,
+        min_dur=settings.min_event_duration_min,
+        max_dur=settings.max_event_duration_min,
+    )
+    ef = build_event_frame(evts)
+    if ef.empty:
+        return {"clusters": []}
+    ef = cluster_events(ef)
+    cluster_stats = []
+    if "cluster" in ef.columns:
+        for cid, g in ef.groupby("cluster", dropna=False):
+            hours = list(g["t_on"].dt.hour) if "t_on" in g else []
+            if cid is None:
+                cid_int = -1
+            else:
+                if isinstance(cid, (int,)):
+                    cid_int = int(cid)
+                else:
+                    try:
+                        cid_int = int(str(cid))
+                    except Exception:
+                        cid_int = -1
+            cluster_stats.append({
+                "cluster": cid_int,
+                "count": int(len(g)),
+                "avg_dP_kW": float(g["dP_on_kW"].mean()),
+                "median_duration_min": float(g["duration_min"].median() if g["duration_min"].notna().any() else 0),
+                "avg_energy_kWh": float(g["energy_kWh"].mean()) if g["energy_kWh"].notna().any() else None,
+                "hours": hours,
+            })
+    cluster_stats = enrich_cluster_stats(cluster_stats)
+    enriched = apply_suggestions(cluster_stats, _label_store)
+    return {"clusters": enriched}
+
+
+from pydantic import BaseModel
+
+
+class LabelIn(BaseModel):
+    cluster: int
+    label: str
+    confidence: float | None = None
+
+
+@router.post("/labels", summary="Persist a manual label for a cluster")
+def set_label(body: LabelIn):
+    cl = _label_store.set(cluster=body.cluster, label=body.label, source="manual", confidence=body.confidence)
+    return {"ok": True, "label": cl.to_dict()}
 
 
 @router.get("/viz", response_class=HTMLResponse, summary="Simple in-browser visualization of baseload, clusters and events")
