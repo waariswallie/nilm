@@ -59,7 +59,15 @@ class Settings(BaseModel):
     nice_level: int | None = _int_env.__func__("NICE_LEVEL")  # type: ignore[attr-defined]
     cpu_affinity: str | None = os.getenv("CPU_AFFINITY")  # e.g. "0,1"
 
+    # Default lookback (days) for /scan and other summaries. Hard cap enforced in API at 30 now.
     lookback_days: int = int(os.getenv("LOOKBACK_DAYS", 7))
+    # Optional high‑resolution sampling interval (seconds) if raw 10s table is available.
+    # If not set, system assumes only minute-level cumulative data.
+    highres_interval_s: int | None = (lambda v: int(v) if v and v.isdigit() else None)(os.getenv("HIGHRES_INTERVAL_SECONDS", ""))
+    highres_table: str | None = os.getenv("HIGHRES_TABLE", None)  # separate table for 10s samples (instant power)
+    highres_time_column: str = os.getenv("HIGHRES_TIME_COLUMN", "ts")
+    highres_phase_cols: str = os.getenv("HIGHRES_PHASE_COLS", "L1,L2,L3")  # instantaneous kW per phase if available
+    highres_power_col: str = os.getenv("HIGHRES_POWER_COL", "Pnet")  # optional total net power; else sum phases
     event_watt_threshold: float = float(os.getenv("EVENT_WATT_THRESHOLD", 500))
     min_event_duration_min: int = int(os.getenv("MIN_EVENT_DURATION_MIN", 2))
     max_event_duration_min: int = int(os.getenv("MAX_EVENT_DURATION_MIN", 240))

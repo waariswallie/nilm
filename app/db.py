@@ -111,6 +111,73 @@ def fetch_minute_power(start_ts: str | None = None, end_ts: str | None = None) -
     return _postprocess_frame(df, consume_cols, export_cols, phase_cols if attempt_phase else [])
 
 
+def fetch_highres_power(start_ts: str | None = None, end_ts: str | None = None) -> pd.DataFrame:
+    """Fetch high‑resolution instantaneous power (e.g. every 10 seconds) if configured.
+
+    Expected schema (configurable via env):
+      HIGHRES_TABLE (default: None -> feature disabled)
+      HIGHRES_TIME_COLUMN (default: ts)
+      HIGHRES_PHASE_COLS (comma list e.g. L1,L2,L3) instantaneous kW per phase
+      HIGHRES_POWER_COL (optional single net power col) else sum of phases
+
+    Returns tz-aware Europe/Amsterdam indexed DataFrame with columns:
+      Pnet, L1, L2, L3 (subset depending on availability)
+    Falls back to empty DataFrame if not configured.
+    """
+    if not settings.highres_table:
+        return pd.DataFrame()
+    phase_cols = [c.strip() for c in (settings.highres_phase_cols or '').split(',') if c.strip()]
+    power_col = settings.highres_power_col
+    tcol = settings.highres_time_column
+    cols = [tcol]
+    if power_col:
+        cols.append(power_col)
+    cols.extend([c for c in phase_cols])
+    col_sql = ", ".join(cols)
+    q = f"""
+    SELECT {col_sql}
+    FROM {settings.highres_table}
+    WHERE (%(start)s IS NULL OR {tcol} >= %(start)s)
+      AND (%(end)s IS NULL OR {tcol} < %(end)s)
+    ORDER BY {tcol}
+    """
+    params = {"start": start_ts, "end": end_ts}
+    try:
+        with conn() as c:
+            df = pd.read_sql(q, c, params=params)
+    except Exception:
+        return pd.DataFrame()
+    if df.empty:
+        return df
+    # Time index
+    ts_series = pd.to_datetime(df[tcol], utc=True, errors="coerce")
+    if isinstance(ts_series, pd.Series):
+        try:
+            ts_series = ts_series.dt.tz_convert("Europe/Amsterdam")
+        except Exception:
+            ts_series = ts_series.dt.tz_localize("UTC").dt.tz_convert("Europe/Amsterdam")
+        df[tcol] = ts_series
+    df = df.dropna(subset=[tcol]).set_index(tcol).sort_index()
+    # Convert numerics
+    for c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    # Build Pnet
+    if power_col and power_col in df.columns:
+        df["Pnet"] = pd.to_numeric(df[power_col], errors="coerce")
+    else:
+        have_ph = [c for c in phase_cols if c in df.columns]
+        if have_ph:
+            phasedf = df[have_ph].apply(pd.to_numeric, errors="coerce")
+            # Row-wise sum without axis=1 to appease strict linters: transpose then sum
+            df["Pnet"] = phasedf.T.sum()  # equivalent to phasedf.sum(axis=1)
+    # Keep relevant cols
+    keep = [c for c in ["Pnet"] + phase_cols if c in df.columns]
+    out = df[keep]
+    if isinstance(out, pd.Series):  # safety, though slice with list yields DF normally
+        out = out.to_frame()
+    return out.copy()
+
+
 def _postprocess_frame(df: pd.DataFrame, consume_cols: list[str] | None = None,
                        export_cols: list[str] | None = None, phase_cols: list[str] | None = None) -> pd.DataFrame:
     if df.empty:

@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any
 from .config import settings
-from .db import fetch_minute_power
+from .db import fetch_minute_power, fetch_highres_power
 from .preprocessing import clean_series
 from .events import detect_events
 from .clustering import build_event_frame, cluster_events
@@ -57,19 +57,48 @@ def status() -> Dict[str, Any]:
 
 
 @router.get("/scan")
-def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=365)):
-    # Limit fetch to last N days to reduce load
+def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=30)):
+    # Enforce hard cap 30 days
+    if last_days > 30:
+        last_days = 30
     start_dt = datetime.utcnow() - timedelta(days=last_days)
     start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
-    df = fetch_minute_power(start_ts=start_iso)
-    df["Pnet"] = clean_series(df["Pnet"])  # basic denoise
 
-    evts = detect_events(
-        df,
-        watt_threshold=settings.event_watt_threshold,
-        min_dur=settings.min_event_duration_min,
-        max_dur=settings.max_event_duration_min,
-    )
+    # Decide whether to use high-res (if configured and window small)
+    use_highres = False
+    df_hr = None
+    if settings.highres_table and settings.highres_interval_s:
+        # heuristic: only use high-res if <= 3 days (avoid huge payloads)
+        if last_days <= 3:
+            df_hr = fetch_highres_power(start_ts=start_iso)
+            if df_hr is not None and not df_hr.empty:
+                use_highres = True
+
+    if use_highres and df_hr is not None:
+        df_src = df_hr
+        # Build minute aggregate for baseload + fallback features
+        df = df_src.resample('1min').mean(numeric_only=True)
+        if "Pnet" in df.columns:
+            df["Pnet"] = clean_series(df["Pnet"].ffill())
+    else:
+        df = fetch_minute_power(start_ts=start_iso)
+        if not df.empty:
+            df["Pnet"] = clean_series(df["Pnet"])  # basic denoise
+
+    # Event detection source: high-res if available else minute-level
+    event_df_source = df_hr if use_highres else df
+    evts = []
+    if event_df_source is not None and not event_df_source.empty:
+        # Adjust threshold for high-res: reduce if using high-res (heuristic 60% of minute threshold)
+        threshold = settings.event_watt_threshold
+        if use_highres:
+            threshold = max(100, threshold * 0.6)
+        evts = detect_events(
+            event_df_source,
+            watt_threshold=threshold,
+            min_dur=settings.min_event_duration_min,
+            max_dur=settings.max_event_duration_min,
+        )
     ef = build_event_frame(evts)
     if not ef.empty:
         ef = cluster_events(ef)
@@ -107,7 +136,8 @@ def scan(last_days: int = Query(default=settings.lookback_days, ge=1, le=365)):
             })
 
     return {
-        "lookback_days": last_days,
+    "lookback_days": last_days,
+    "highres": use_highres,
         "from": df.index.min().isoformat() if not df.empty else None,
         "to": df.index.max().isoformat() if not df.empty else None,
         "n_points": int(len(df)),
