@@ -258,6 +258,50 @@ def autolabel_endpoint(last_days: int = Query(default=7, ge=1, le=30), overwrite
     return {"lookback_days": last_days, **result, "clusters": enriched}
 
 
+# Extra alias zodat je met GET kunt testen of de route bestaat zonder iets te veranderen.
+@router.get("/autolabel", summary="Alias van POST /autolabel (dry-run)")
+def autolabel_get(last_days: int = Query(default=7, ge=1, le=30)):
+    # Voer dezelfde logica uit maar persist niet: we roepen autolabel_endpoint aan met overwrite=False
+    # en daarna laden we labels opnieuw zodat we een consistent antwoord hebben.
+    # Omdat autolabel_endpoint sowieso persist doet, maken we hier een 'dry run' variant die GEEN opslag doet.
+    start_dt = datetime.utcnow() - timedelta(days=last_days)
+    start_iso = start_dt.replace(second=0, microsecond=0).isoformat(sep=" ")
+    df = fetch_minute_power(start_ts=start_iso)
+    evts = detect_events(
+        df,
+        watt_threshold=settings.event_watt_threshold,
+        min_dur=settings.min_event_duration_min,
+        max_dur=settings.max_event_duration_min,
+    )
+    ef = build_event_frame(evts)
+    if ef.empty:
+        return {"lookback_days": last_days, "applied": [], "skipped": [], "clusters": []}
+    ef = cluster_events(ef)
+    cluster_stats = []
+    if "cluster" in ef.columns:
+        for cid, g in ef.groupby("cluster", dropna=False):
+            hours = list(g["t_on"].dt.hour) if "t_on" in g else []
+            if cid is None:
+                cid_int = -1
+            else:
+                try:
+                    cid_int = int(str(cid))
+                except Exception:  # noqa: BLE001
+                    cid_int = -1
+            cluster_stats.append({
+                "cluster": cid_int,
+                "count": int(len(g)),
+                "avg_dP_kW": float(g["dP_on_kW"].mean()),
+                "median_duration_min": float(g["duration_min"].median() if g["duration_min"].notna().any() else 0),
+                "avg_energy_kWh": float(g["energy_kWh"].mean()) if g["energy_kWh"].notna().any() else None,
+                "hours": hours,
+            })
+    cluster_stats = enrich_cluster_stats(cluster_stats)
+    # Geen persist hier: alleen suggesties tonen + bestaande labels
+    enriched = apply_suggestions(cluster_stats, _label_store)
+    return {"lookback_days": last_days, "applied": [], "skipped": [], "clusters": enriched, "note": "GET /autolabel is dry-run; gebruik POST om labels op te slaan."}
+
+
 from pydantic import BaseModel
 
 
