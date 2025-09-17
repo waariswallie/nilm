@@ -791,7 +791,7 @@ code{background:#1e272e;padding:2px 4px;border-radius:4px}
 </head>
 <body>
  <h1>NILM Overview</h1>
- <div style=\"margin-bottom:1rem\">Laatste <b id=\"daysLbl\"></b> dagen · Feature set <b id=\"fsLbl\"></b> · <label>Wijzig dagen <input id=\"daysInput\" type=number min=1 max=30 style=width:70px></label> <label style=margin-left:.5rem>Feature <select id=\"featureSetSel\"><option value=basic>basic</option><option value=extended selected>extended</option></select></label> <button id=\"reloadBtn\">Herlaad</button> · <a href=\"/docs\">API docs</a></div>
+ <div style=\"margin-bottom:1rem\">Laatste <b id=\"daysLbl\"></b> dagen · Feature set <b id=\"fsLbl\"></b> · <label>Wijzig dagen <input id=\"daysInput\" type=number min=1 max=30 style=width:70px></label> <label style=margin-left:.5rem>Feature <select id=\"featureSetSel\"><option value=basic>basic</option><option value=extended selected>extended</option></select></label> <label style=margin-left:.5rem><input type=checkbox id=\"debugChk\"> Debug</label> <button id=\"reloadBtn\">Herlaad</button> · <button id=\"autoLabelBtn\" title=\"Past suggesties toe en slaat labels op\">Auto-label</button> <label class=small><input type=checkbox id=\"overwriteChk\" checked> overwrite</label> · <a href=\"/docs\">API docs</a> <span id=\"statusLbl\" class=small style=margin-left:.5rem></span></div>
  <div class=\"grid\">
     <div class=card>
      <h2>Clusters</h2>
@@ -815,16 +815,33 @@ code{background:#1e272e;padding:2px 4px;border-radius:4px}
  <p class=small>Tip: gebruik <code>/clusters?recluster_noise=true&noise_eps=...&noise_min_samples=...</code> voor fijnmazige splitsing. Deze pagina haalt nu losse API calls parallel op.</p>
  <div class=small id=foot></div>
 <script>
-const days = Number(new URLSearchParams(location.search).get('last_days')||%DAYS%);
-const featureSet = new URLSearchParams(location.search).get('feature_set') || '%FEATURE_SET%';
+const params = new URLSearchParams(location.search);
+const days = Number(params.get('last_days')||%DAYS%);
+const featureSet = params.get('feature_set') || '%FEATURE_SET%';
+const debugFlag = (params.get('debug')||'false') === 'true';
 document.getElementById('daysInput').value = days;
 document.getElementById('featureSetSel').value = featureSet;
 document.getElementById('daysLbl').textContent = days;
 document.getElementById('fsLbl').textContent = featureSet;
+document.getElementById('debugChk').checked = debugFlag;
 document.getElementById('reloadBtn').onclick = () => {
     const d = document.getElementById('daysInput').value || days;
     const fs = document.getElementById('featureSetSel').value;
-    location.search = '?last_days='+d+'&feature_set='+fs;
+    const dbg = document.getElementById('debugChk').checked ? 'true' : 'false';
+    location.search = '?last_days='+d+'&feature_set='+fs+'&debug='+dbg;
+};
+document.getElementById('autoLabelBtn').onclick = async () => {
+    const btn = document.getElementById('autoLabelBtn');
+    const status = document.getElementById('statusLbl');
+    btn.disabled = true; status.textContent = 'Bezig met auto-label...';
+    try{
+        const ow = document.getElementById('overwriteChk').checked ? 'true' : 'false';
+        const r = await fetch(`/autolabel?last_days=${days}&feature_set=${featureSet}&overwrite=${ow}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+        const j = await r.json();
+        status.textContent = `Auto-label klaar: toegepast ${j.applied?.length||0}, overgeslagen ${j.skipped?.length||0}`;
+        await load();
+    }catch(e){ status.textContent = 'Fout bij auto-label: '+e; }
+    finally{ btn.disabled = false; setTimeout(()=> status.textContent='', 5000); }
 };
 
 function fmt(v,dec=2){ if(v==null||isNaN(v)) return ''; return Number(v).toFixed(dec); }
@@ -834,12 +851,12 @@ async function fetchJson(url){ const r = await fetch(url); if(!r.ok) throw new E
 async function load(){
     try {
         const [clusters, devices, sessions, scan] = await Promise.all([
-            fetchJson(`/clusters?last_days=${days}&feature_set=${featureSet}`),
+            fetchJson(`/clusters?last_days=${days}&feature_set=${featureSet}&debug=${debugFlag}`),
             fetchJson(`/devices?last_days=${days}&feature_set=${featureSet}`),
             fetchJson(`/sessions?last_days=${days}`),
             fetchJson(`/scan?last_days=${days}`)
         ]);
-        renderClusters(clusters.clusters||[]);
+        renderClusters(clusters.clusters||[], debugFlag);
         renderDevices(devices.devices||[]);
         renderSessions(sessions.sessions||[]);
         renderBaseload(scan.baseload||{});
@@ -849,12 +866,22 @@ async function load(){
     }
 }
 
-function renderClusters(list){
+function renderClusters(list, debugOn){
     const tbl = document.getElementById('clustersTbl');
     if(!list.length){ tbl.innerHTML='<tr><td>Geen clusters</td></tr>'; return; }
     list.sort((a,b)=> (b.total_energy_kWh||0)-(a.total_energy_kWh||0));
-    const head = '<tr><th>ID</th><th>Label</th><th>Count</th><th>ΔP avg</th><th>Dur med</th><th>E tot</th><th>E evt</th></tr>';
-    const rows = list.slice(0,50).map(c=>`<tr><td>${c.cluster}</td><td>${c.label||c.suggested_label||''}</td><td>${c.count}</td><td>${fmt(c.avg_dP_kW)}</td><td>${fmt(c.median_duration_min)}</td><td>${fmt(c.total_energy_kWh,3)}</td><td>${fmt(c.avg_event_energy_kWh,3)}</td></tr>`).join('');
+    const head = '<tr><th>ID</th><th>Label</th><th>Bron</th><th>Conf</th><th>Count</th><th>ΔP avg</th><th>Dur med</th><th>E tot</th><th>E evt</th>' + (debugOn? '<th>Trace</th>' : '') + '</tr>';
+    const rows = list.slice(0,50).map(c=>{
+        const label = c.label||c.suggested_label||'';
+        const src = c.label_source || (c.suggested_label? 'suggested': '');
+        const conf = c.label_confidence!=null ? fmt(c.label_confidence,2) : '';
+        let trace = '';
+        if(debugOn && Array.isArray(c.rule_trace)){
+            const hits = c.rule_trace.filter(r=>r.matched).map(r=> r.reason? `${r.rule} · ${r.reason}` : r.rule);
+            trace = hits.join('; ');
+        }
+        return `<tr><td>${c.cluster}</td><td>${label}</td><td>${src}</td><td>${conf}</td><td>${c.count}</td><td>${fmt(c.avg_dP_kW)}</td><td>${fmt(c.median_duration_min)}</td><td>${fmt(c.total_energy_kWh,3)}</td><td>${fmt(c.avg_event_energy_kWh,3)}</td>` + (debugOn? `<td style="max-width:260px">${trace}</td>`:'') + `</tr>`;
+    }).join('');
     tbl.innerHTML = head+rows;
     // donut
     const ctx = document.getElementById('clusterDonut');
