@@ -760,7 +760,7 @@ load();
 </html>
     """
     html = html.replace("__DAYS__", str(days)).replace("__GEN_AT__", datetime.utcnow().isoformat()+"Z")
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, headers={"Cache-Control":"no-store, max-age=0"})
 
 
 @router.get("/overview", response_class=HTMLResponse, summary="Unified dashboard (clusters, devices, sessions)")
@@ -924,7 +924,7 @@ load();
 </html>
         """
     html = html.replace('%DAYS%', str(last_days)).replace('%FEATURE_SET%', feature_set)
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, headers={"Cache-Control":"no-store, max-age=0"})
 
 
 # Alias /dashboard (so you can try both) + simple root index
