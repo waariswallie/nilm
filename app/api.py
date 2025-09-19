@@ -435,6 +435,8 @@ def delete_label(cluster: int):
 @router.get("/devices", summary="Aggregated per-device (cluster) energy usage over a window")
 def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noise: bool = False,
                      merge_labels: bool = Query(default=True, description="Combine clusters met hetzelfde label"),
+                     include_series: bool = Query(default=False, description="Voeg per-device dagelijkse kWh serie toe"),
+                     include_baseload: bool = Query(default=False, description="Voeg benadering van baseload-energie toe (kW*24)"),
                      eps: float | None = Query(default=None),
                      min_samples: int | None = Query(default=None, ge=1),
                      feature_set: str = Query(default="basic", pattern="^(basic|extended)$")):
@@ -468,6 +470,11 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
             continue
         energy_series = g["energy_kWh"].fillna(0)
         total_energy = float(energy_series.sum())
+        # Daily series per cluster
+        daily_map: Dict[str, float] = {}
+        if include_series and "t_on" in g:
+            by_day = g.groupby(g["t_on"].dt.date)["energy_kWh"].sum()
+            daily_map = {str(d): float(v) for d, v in by_day.items()}
         clusters[cid_int] = {
             "cluster": cid_int,
             "events": int(len(g)),
@@ -487,6 +494,7 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
             "first_ts": g["t_on"].min().isoformat() if "t_on" in g else None,
             "last_ts": g["t_on"].max().isoformat() if "t_on" in g else None,
             "dows": list(g["t_on"].dt.weekday) if "t_on" in g else [],
+            "series_daily": daily_map if include_series else None,
         }
 
     # Enrich with heuristics & suggestions
@@ -516,6 +524,7 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
                     "median_durations": [d["median_duration_min"]],
                     "first_seen": d.get("first_seen"),
                     "last_seen": d.get("last_seen"),
+                    "series_acc": {} if include_series else None,
                 }
             else:
                 m = merged[key]
@@ -529,10 +538,21 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
                 if d.get("last_seen") and (m["last_seen"] is None or d["last_seen"] > m["last_seen"]):
                     m["last_seen"] = d["last_seen"]
                 m["median_durations"].append(d["median_duration_min"])
+            # accumulate series
+            if include_series:
+                src_map = d.get("series_daily") or {}
+                acc = merged[key]["series_acc"]
+                for day, val in src_map.items():
+                    acc[day] = acc.get(day, 0.0) + float(val)
         # finalize
         for key, m in merged.items():
             avg_dP = m["avg_dP_kW_acc"] / m["events"] if m["events"] else 0.0
             share = (m["total_energy_kWh"] / total_energy_all * 100.0) if total_energy_all > 0 else 0.0
+            series_out = None
+            if include_series and isinstance(m.get("series_acc"), dict):
+                # normalize to sorted list
+                days_sorted = sorted(m["series_acc"].keys())
+                series_out = [{"day": d, "kWh": round(m["series_acc"][d], 4)} for d in days_sorted]
             devices_out.append({
                 "name": m["name"],
                 "clusters": m["clusters"],
@@ -546,6 +566,7 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
                 "first_seen": m.get("first_seen"),
                 "last_seen": m.get("last_seen"),
                 "merged": True,
+                "series_daily": series_out,
             })
     else:
         for d in enriched:
@@ -565,7 +586,37 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
                 "first_seen": d.get("first_seen"),
                 "last_seen": d.get("last_seen"),
                 "merged": False,
+                "series_daily": (
+                    [{"day": k, "kWh": round(v, 4)} for k, v in sorted((d.get("series_daily") or {}).items())]
+                    if include_series else None
+                ),
             })
+
+    # Optionally add baseload approximation device
+    if include_baseload:
+        try:
+            base = nightly_baseload(df)
+            # convert to daily energy (kWh): kW * 24
+            daily_energy = {str(k): float(v) * 24.0 for k, v in base.tail(last_days).items()}
+            total_base = round(sum(daily_energy.values()), 4)
+            share = (total_base / total_energy_all * 100.0) if total_energy_all > 0 else 0.0
+            devices_out.append({
+                "name": "Baseload-approx",
+                "clusters": [],
+                "source": "computed",
+                "events": 0,
+                "avg_dP_kW": None,
+                "median_duration_min": None,
+                "total_energy_kWh": total_base,
+                "avg_event_energy_kWh": None,
+                "energy_share_pct": round(share, 2),
+                "first_seen": df.index.min().isoformat() if not df.empty else None,
+                "last_seen": df.index.max().isoformat() if not df.empty else None,
+                "merged": True,
+                "series_daily": [{"day": d, "kWh": round(v, 4)} for d, v in sorted(daily_energy.items())] if include_series else None,
+            })
+        except Exception:  # noqa: BLE001
+            pass
 
     # Sort by energy desc
     devices_out.sort(key=lambda x: x["total_energy_kWh"], reverse=True)
