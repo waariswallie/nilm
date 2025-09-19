@@ -5,6 +5,7 @@ import logging
 from .config import settings
 import os
 from .api import router
+from .site import site
 
 app = FastAPI(title="NILM Pipeline")
 app = FastAPI(title="NILM Service", version="0.1.0")
@@ -32,6 +33,7 @@ def _tune_process():
 		except Exception as e:  # noqa: BLE001
 			logging.warning("Could not set CPU affinity (%s): %s", settings.cpu_affinity, e)
 app.include_router(router)
+app.include_router(site)
 
 
 @app.get("/", tags=["meta"], summary="Service root")
