@@ -46,6 +46,7 @@ def _layout(title: str, body_html: str) -> HTMLResponse:
       <a href="/site/sessions">Sessions</a>
       <a href="/site/baseload">Baseload</a>
       <span class=sp></span>
+      <a href="/status" title="Status & configuratie (JSON)">Status</a>
       <a href="/overview">Overview</a>
       <a href="/docs">API docs</a>
     </div>
@@ -95,6 +96,7 @@ def home():
 def clusters_page(last_days: int = Query(default=7, ge=1, le=30), feature_set: str = Query(default="extended", pattern="^(basic|extended)$"), debug: bool = False):
     tpl = """
     <h1>Clusters</h1>
+    <div id=status class=muted></div>
     <div style=\"display:flex;gap:.5rem;align-items:center;margin:.5rem 0 1rem\">
       <label>Dagen <input id=days type=number min=1 max=30 value=__LAST_DAYS__ style=width:80px></label>
       <label>Feature <select id=fs><option value=basic>basic</option><option value=extended selected>extended</option></select></label>
@@ -111,6 +113,7 @@ def clusters_page(last_days: int = Query(default=7, ge=1, le=30), feature_set: s
     const daysEl = document.getElementById('days');
     const fsEl = document.getElementById('fs');
     const dbgEl = document.getElementById('dbg');
+    const statusEl = document.getElementById('status');
     fsEl.value = '__FEATURE_SET__';
     document.getElementById('go').onclick = () => {
       const q = `?last_days=${daysEl.value}&feature_set=${fsEl.value}&debug=${dbgEl.checked}`;
@@ -118,13 +121,28 @@ def clusters_page(last_days: int = Query(default=7, ge=1, le=30), feature_set: s
     };
     document.getElementById('autolabel').onclick = async() => {
       const ow = document.getElementById('ow').checked ? 'true':'false';
-      await fetch(`/autolabel?last_days=${daysEl.value}&feature_set=${fsEl.value}&overwrite=${ow}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
-      location.reload();
+      statusEl.textContent = 'Auto-label bezig...';
+      try{
+        const resp = await fetch(`/autolabel?last_days=${daysEl.value}&feature_set=${fsEl.value}&overwrite=${ow}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+        const j = await resp.json();
+        statusEl.textContent = `Auto-label klaar: toegepast ${j.applied?.length||0}, overgeslagen ${j.skipped?.length||0}`;
+        setTimeout(()=> statusEl.textContent='', 4000);
+        await load();
+      }catch(e){ statusEl.textContent = 'Fout bij auto-label: '+e; }
     };
     async function load(){
-      const r = await fetch(`/clusters?last_days=__LAST_DAYS__&feature_set=__FEATURE_SET__&debug=__DEBUG_BOOL__`);
-      const j = await r.json();
-      const list = j.clusters||[];
+      statusEl.textContent = 'Laden...';
+      let list = [];
+      try{
+        const r = await fetch(`/clusters?last_days=__LAST_DAYS__&feature_set=__FEATURE_SET__&debug=__DEBUG_BOOL__`);
+        if(!r.ok){ throw new Error('/clusters -> '+r.status); }
+        const j = await r.json();
+        list = j.clusters||[];
+      }catch(e){
+        statusEl.textContent = 'Fout bij laden: '+e+`. Bekijk \u003ca href=\"/status\" style=\"color:#4ea3ff\"\u003estatus\u003c/a\u003e.`;
+        return;
+      }
+      statusEl.textContent = list.length? '' : 'Geen clusters in dit venster. Probeer meer dagen of check \u003ca href=\"/status\" style=\"color:#4ea3ff\"\u003estatus\u003c/a\u003e.';
       // Donut by total energy
       const ctx = document.getElementById('donut');
       if(window._don) window._don.destroy();
@@ -159,6 +177,7 @@ def clusters_page(last_days: int = Query(default=7, ge=1, le=30), feature_set: s
 def devices_page(last_days: int = Query(default=7, ge=1, le=30), feature_set: str = Query(default="extended", pattern="^(basic|extended)$")):
     tpl = """
     <h1>Devices</h1>
+    <div id=status class=muted></div>
     <div style=\"display:flex;gap:.5rem;align-items:center;margin:.5rem 0 1rem\">
       <label>Dagen <input id=days type=number min=1 max=30 value=__LAST_DAYS__ style=width:80px></label>
       <label>Feature <select id=fs><option value=basic>basic</option><option value=extended selected>extended</option></select></label>
@@ -173,10 +192,17 @@ def devices_page(last_days: int = Query(default=7, ge=1, le=30), feature_set: st
     <script>
     const fsEl = document.getElementById('fs'); fsEl.value='__FEATURE_SET__';
     document.getElementById('go').onclick = ()=>{ location.search = `?last_days=${document.getElementById('days').value}&feature_set=${fsEl.value}`; };
+    const statusEl = document.getElementById('status');
     async function load(){
-      const r = await fetch(`/devices?last_days=__LAST_DAYS__&feature_set=__FEATURE_SET__&include_series=true&include_baseload=true`);
-      const j = await r.json();
-      const list = j.devices||[];
+      statusEl.textContent = 'Laden...';
+      let list = [];
+      try{
+        const r = await fetch(`/devices?last_days=__LAST_DAYS__&feature_set=__FEATURE_SET__&include_series=true&include_baseload=true`);
+        if(!r.ok){ throw new Error('/devices -> '+r.status); }
+        const j = await r.json();
+        list = j.devices||[];
+      }catch(e){ statusEl.textContent = 'Fout bij laden: '+e+`. Bekijk \u003ca href=\"/status\" style=\"color:#4ea3ff\"\u003estatus\u003c/a\u003e.`; return; }
+      statusEl.textContent = list.length? '' : 'Geen devices in dit venster. Probeer meer dagen of check \u003ca href=\"/status\" style=\"color:#4ea3ff\"\u003estatus\u003c/a\u003e.';
       const ctx = document.getElementById('bar');
       if(window._bar) window._bar.destroy();
       window._bar = new Chart(ctx,{type:'bar',data:{labels:list.map(d=>d.name), datasets:[{label:'kWh', data:list.map(d=>d.total_energy_kWh)}]}});
@@ -210,6 +236,7 @@ def devices_page(last_days: int = Query(default=7, ge=1, le=30), feature_set: st
 def sessions_page(last_days: int = Query(default=7, ge=1, le=30)):
     tpl = """
     <h1>Sessions</h1>
+    <div id=status class=muted></div>
     <div style=\"display:flex;gap:.5rem;align-items:center;margin:.5rem 0 1rem\">
       <label>Dagen <input id=days type=number min=1 max=30 value=__LAST_DAYS__ style=width:80px></label>
       <button id=go>Herlaad</button>
@@ -217,10 +244,17 @@ def sessions_page(last_days: int = Query(default=7, ge=1, le=30)):
     <div class=card><table id=tbl></table></div>
     <script>
     document.getElementById('go').onclick = ()=>{ location.search='?last_days='+document.getElementById('days').value; };
+    const statusEl = document.getElementById('status');
     async function load(){
-       const r = await fetch(`/sessions?last_days=__LAST_DAYS__`);
-       const j = await r.json();
-       const list = j.sessions||[];
+       statusEl.textContent = 'Laden...';
+       let list = [];
+       try{
+         const r = await fetch(`/sessions?last_days=__LAST_DAYS__`);
+         if(!r.ok){ throw new Error('/sessions -> '+r.status); }
+         const j = await r.json();
+         list = j.sessions||[];
+       }catch(e){ statusEl.textContent = 'Fout bij laden: '+e+`. Bekijk \u003ca href=\"/status\" style=\"color:#4ea3ff\"\u003estatus\u003c/a\u003e.`; return; }
+       statusEl.textContent = list.length? '' : 'Geen sessions in dit venster. Probeer meer dagen of check \u003ca href=\"/status\" style=\"color:#4ea3ff\"\u003estatus\u003c/a\u003e.';
        list.sort((a,b)=> (b.total_energy_kWh||0)-(a.total_energy_kWh||0));
        const tbl = document.getElementById('tbl');
        const head = '<tr><th>Label</th><th>Cluster</th><th>Events</th><th>Duur min</th><th>E kWh</th><th>%</th></tr>';
@@ -238,6 +272,7 @@ def sessions_page(last_days: int = Query(default=7, ge=1, le=30)):
 def baseload_page(last_days: int = Query(default=30, ge=1, le=365)):
     tpl = """
     <h1>Baseload</h1>
+    <div id=status class=muted></div>
     <div style=\"display:flex;gap:.5rem;align-items:center;margin:.5rem 0 1rem\">
       <label>Dagen <input id=days type=number min=1 max=365 value=__LAST_DAYS__ style=width:80px></label>
       <button id=go>Herlaad</button>
@@ -245,10 +280,17 @@ def baseload_page(last_days: int = Query(default=30, ge=1, le=365)):
     <canvas id=line height=220></canvas>
     <script>
     document.getElementById('go').onclick = ()=>{ location.search='?last_days='+document.getElementById('days').value; };
+    const statusEl = document.getElementById('status');
     async function load(){
-      const r = await fetch(`/scan?last_days=__LAST_DAYS__`);
-      const j = await r.json();
-      const base = j.baseload||{};
+      statusEl.textContent = 'Laden...';
+      let base = {};
+      try{
+        const r = await fetch(`/scan?last_days=__LAST_DAYS__`);
+        if(!r.ok){ throw new Error('/scan -> '+r.status); }
+        const j = await r.json();
+        base = j.baseload||{};
+      }catch(e){ statusEl.textContent = 'Fout bij laden: '+e+`. Bekijk \u003ca href=\"/status\" style=\"color:#4ea3ff\"\u003estatus\u003c/a\u003e.`; return; }
+      statusEl.textContent = Object.keys(base).length? '' : 'Geen baseload data gevonden in dit venster.';
       const labels = Object.keys(base).sort();
       const vals = labels.map(k=> base[k]);
       const ctx = document.getElementById('line');
