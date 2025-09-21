@@ -448,6 +448,7 @@ def delete_label(cluster: int):
 def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noise: bool = False,
                      merge_labels: bool = Query(default=True, description="Combine clusters met hetzelfde label"),
                      include_series: bool = Query(default=False, description="Voeg per-device dagelijkse kWh serie toe"),
+                     series_mode: str = Query(default="pulses", pattern="^(pulses|sessions)$", description="Bron voor dagserie: pulses (events) of sessions (gegroepeerde runs)"),
                      include_baseload: bool = Query(default=False, description="Voeg benadering van baseload-energie toe (kW*24)"),
                      eps: float | None = Query(default=None),
                      min_samples: int | None = Query(default=None, ge=1),
@@ -473,6 +474,22 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
 
     # Aggregate per cluster
     clusters: Dict[int, Dict[str, Any]] = {}
+    # Optional: build daily series using sessions instead of pulses
+    sessions_daily_map: Dict[int, Dict[str, float]] = {}
+    if include_series and series_mode == "sessions":
+        try:
+            sess = group_sessions(ef, max_gap_min=15, min_session_energy_kWh=0.0, min_events=1)
+            # aggregate session energy per cluster per day
+            for s in sess:
+                cid = s.get("cluster")
+                if cid is None:
+                    continue
+                day = str(pd.Timestamp(s.get("start_ts") or s.get("t_start") or s.get("t_on") or s.get("first_ts")).date())
+                val = float(s.get("total_energy_kWh") or 0.0)
+                dm = sessions_daily_map.setdefault(int(cid), {})
+                dm[day] = dm.get(day, 0.0) + val
+        except Exception:  # noqa: BLE001
+            sessions_daily_map = {}
     for cid, g in ef.groupby("cluster", dropna=False):
         try:
             cid_int = int(f"{cid}")
@@ -484,9 +501,12 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
         total_energy = float(energy_series.sum())
         # Daily series per cluster
         daily_map: Dict[str, float] = {}
-        if include_series and "t_on" in g:
-            by_day = g.groupby(g["t_on"].dt.date)["energy_kWh"].sum()
-            daily_map = {str(d): float(v) for d, v in by_day.items()}
+        if include_series:
+            if series_mode == "pulses" and "t_on" in g:
+                by_day = g.groupby(g["t_on"].dt.date)["energy_kWh"].sum()
+                daily_map = {str(d): float(v) for d, v in by_day.items()}
+            elif series_mode == "sessions":
+                daily_map = sessions_daily_map.get(cid_int, {})
         clusters[cid_int] = {
             "cluster": cid_int,
             "events": int(len(g)),
@@ -517,6 +537,7 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
     # Build device list
     total_energy_all = sum(d.get("total_energy_kWh", 0.0) for d in enriched)
     devices_out = []
+    total_base_energy = 0.0  # will be populated if include_baseload
 
     if merge_labels:
         # Merge clusters that share the same resolved label (manual > rule > suggestion)
@@ -559,7 +580,8 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
         # finalize
         for key, m in merged.items():
             avg_dP = m["avg_dP_kW_acc"] / m["events"] if m["events"] else 0.0
-            share = (m["total_energy_kWh"] / total_energy_all * 100.0) if total_energy_all > 0 else 0.0
+            # share computed later after baseload (if any) is known; set placeholder 0 for now
+            share = 0.0
             series_out = None
             if include_series and isinstance(m.get("series_acc"), dict):
                 # normalize to sorted list
@@ -584,7 +606,8 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
         for d in enriched:
             label = d.get("label") or d.get("suggested_label") or f"Cluster {d['cluster']}"
             source = d.get("label_source") or ("suggested" if d.get("suggested_label") else None)
-            share = (d.get("total_energy_kWh", 0.0) / total_energy_all * 100.0) if total_energy_all > 0 else 0.0
+            # share computed later after baseload (if any) is known; set placeholder 0 for now
+            share = 0.0
             devices_out.append({
                 "name": label,
                 "cluster": d["cluster"],
@@ -611,7 +634,9 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
             # convert to daily energy (kWh): kW * 24
             daily_energy = {str(k): float(v) * 24.0 for k, v in base.tail(last_days).items()}
             total_base = round(sum(daily_energy.values()), 4)
-            share = (total_base / total_energy_all * 100.0) if total_energy_all > 0 else 0.0
+            total_base_energy = total_base
+            # share computed later after denominator known
+            share = 0.0
             devices_out.append({
                 "name": "Baseload-approx",
                 "clusters": [],
@@ -629,6 +654,13 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
             })
         except Exception:  # noqa: BLE001
             pass
+
+    # Recompute shares with proper denominator (include baseload if present)
+    denom = total_energy_all + (total_base_energy if include_baseload else 0.0)
+    if denom > 0:
+        for d in devices_out:
+            te = d.get("total_energy_kWh", 0.0) or 0.0
+            d["energy_share_pct"] = round((te / denom * 100.0), 2)
 
     # Sort by energy desc
     devices_out.sort(key=lambda x: x["total_energy_kWh"], reverse=True)

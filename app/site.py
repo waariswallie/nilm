@@ -99,7 +99,8 @@ def clusters_page(last_days: int = Query(default=7, ge=1, le=30), feature_set: s
     <div id=status class=muted></div>
     <div style=\"display:flex;gap:.5rem;align-items:center;margin:.5rem 0 1rem\">
       <label>Dagen <input id=days type=number min=1 max=30 value=__LAST_DAYS__ style=width:80px></label>
-      <label>Feature <select id=fs><option value=basic>basic</option><option value=extended selected>extended</option></select></label>
+  <label>Feature <select id=fs><option value=basic>basic</option><option value=extended selected>extended</option></select></label>
+  <label>Serie <select id=sm><option value=pulses selected>pulses</option><option value=sessions>sessions</option></select></label>
       <label><input type=checkbox id=dbg __DEBUG_CHECKED__> Debug</label>
       <button id=go>Herlaad</button>
       <button id=autolabel title=\"Past suggesties toe\">Auto-label</button>
@@ -182,22 +183,25 @@ def devices_page(last_days: int = Query(default=7, ge=1, le=30), feature_set: st
       <label>Dagen <input id=days type=number min=1 max=30 value=__LAST_DAYS__ style=width:80px></label>
       <label>Feature <select id=fs><option value=basic>basic</option><option value=extended selected>extended</option></select></label>
       <button id=go>Herlaad</button>
+      <button id=stack>Top 5 stapel</button>
     </div>
     <canvas id=bar height=200></canvas>
     <div class=card style=\"margin-top:1rem\"><table id=tbl></table></div>
     <div class=card style=\"margin-top:1rem\">
       <h3 style=\"margin:.2rem 0 .6rem\">Dagverbruik per apparaat</h3>
       <canvas id=series height=200></canvas>
+      <div class=muted id=sumline style=\"margin-top:.5rem\"></div>
     </div>
     <script>
-    const fsEl = document.getElementById('fs'); fsEl.value='__FEATURE_SET__';
-    document.getElementById('go').onclick = ()=>{ location.search = `?last_days=${document.getElementById('days').value}&feature_set=${fsEl.value}`; };
+  const fsEl = document.getElementById('fs'); fsEl.value='__FEATURE_SET__';
+  const smEl = document.getElementById('sm');
+  document.getElementById('go').onclick = ()=>{ location.search = `?last_days=${document.getElementById('days').value}&feature_set=${fsEl.value}&series_mode=${smEl.value}`; };
     const statusEl = document.getElementById('status');
     async function load(){
       statusEl.textContent = 'Laden...';
       let list = [];
       try{
-        const r = await fetch(`/devices?last_days=__LAST_DAYS__&feature_set=__FEATURE_SET__&include_series=true&include_baseload=true`);
+  const r = await fetch(`/devices?last_days=__LAST_DAYS__&feature_set=__FEATURE_SET__&include_series=true&include_baseload=true&series_mode=${smEl.value}`);
         if(!r.ok){ throw new Error('/devices -> '+r.status); }
         const j = await r.json();
         list = j.devices||[];
@@ -210,6 +214,9 @@ def devices_page(last_days: int = Query(default=7, ge=1, le=30), feature_set: st
       const head = '<tr><th>Naam</th><th>Clusters</th><th>Events</th><th>ΔP avg</th><th>E kWh</th><th>Share %</th></tr>';
       const rows = list.map((d,i)=>`<tr data-i="${i}"><td><a href="#" class="devlink">${d.name}</a></td><td>${(d.clusters||[d.cluster]).join(',')}</td><td>${d.events}</td><td>${fmt(d.avg_dP_kW)}</td><td>${fmt(d.total_energy_kWh,3)}</td><td>${fmt(d.energy_share_pct,1)}</td></tr>`).join('');
       tbl.innerHTML = head + rows;
+      // Share sum
+      const sumPct = list.reduce((acc,d)=> acc + (Number(d.energy_share_pct)||0), 0);
+      document.getElementById('sumline').textContent = `Som van Share % (inclusief baseload indien aanwezig): ${sumPct.toFixed(1)}%`;
       // click to show series
       tbl.querySelectorAll('a.devlink').forEach(a=>{
         a.addEventListener('click', (ev)=>{
@@ -224,6 +231,25 @@ def devices_page(last_days: int = Query(default=7, ge=1, le=30), feature_set: st
           window._ser = new Chart(sctx,{type:'line', data:{labels, datasets:[{label:d.name+' kWh/dag', data:vals, tension:.2, borderColor:'#51cf66', backgroundColor:'rgba(81,207,102,.15)', fill:true}]}});
         });
       });
+
+      // Top 5 stacked button
+      document.getElementById('stack').onclick = () => {
+        const top = [...list].sort((a,b)=> (b.total_energy_kWh||0)-(a.total_energy_kWh||0)).slice(0,5);
+        // Build union of all days
+        const daysSet = new Set();
+        top.forEach(d=> (d.series_daily||[]).forEach(x=> daysSet.add(x.day)) );
+        const labels = Array.from(daysSet).sort();
+        const palette = ['#4ea3ff','#51cf66','#ffa94d','#845ef7','#15aabf'];
+        const datasets = top.map((d,idx)=>{
+          const map = {}; (d.series_daily||[]).forEach(x=>{ map[x.day] = x.kWh; });
+          const vals = labels.map(day=> map[day] || 0);
+          const color = palette[idx % palette.length];
+          return {label:d.name, data:vals, borderColor:color, backgroundColor:color, fill:true, tension:.2, stack:'dev'};
+        });
+        const sctx = document.getElementById('series');
+        if(window._ser) window._ser.destroy();
+        window._ser = new Chart(sctx,{type:'line', data:{labels, datasets}, options:{scales:{y:{stacked:true}, x:{stacked:true}}}});
+      };
     }
     load();
     </script>
