@@ -1,3 +1,48 @@
+# Compact NILM pipeline
+
+Deze repository bevat nu ook een compacte NILM-pipeline die direct tegen de
+MariaDB `MeterData`-tabel draait. De nieuwe code leeft in `nilm/` en de CLI in
+`nilm_detect.py`.
+
+## Installatie
+
+```
+python -m venv .venv
+. .venv/Scripts/activate  # Windows PowerShell
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Vul `.env` met jouw databasegegevens (zie `.env.example`).
+
+## Pipeline draaien
+
+```
+python nilm_detect.py --start "2025-09-20" --end "2025-09-27" \
+  --devices quooker,vaatwasser,oven,wasmachine,droger,koelkast \
+  --tz Europe/Amsterdam --min-event-kw 0.15 --min-duration-sec 30 \
+  --smooth-sec 60 --export-db
+```
+
+Output komt terecht in `output/`:
+
+- `device_timeseries.csv` – tijdreeksen met vermogen/status per apparaat
+- `daily_usage.csv` – energieverbruik per dag per apparaat
+- `summary.md` – korte tekstuele rapportage (top verbruikers, heatmap hints)
+
+De optionele flag `--export-db` schrijft aggregaties naar de MariaDB-tabel
+`DeviceUsage` (wordt aangemaakt indien nodig).
+
+## Tests
+
+```
+pytest
+```
+
+De bestaande FastAPI-tooling uit `app/` en de oorspronkelijke playground in
+`src/nilm/` blijven beschikbaar. Onderstaande documentatie beschrijft die
+componenten.
+
 ### Database kolom mapping (env vars)
 Je kunt afwijkende kolomnamen configureren zonder codewijziging:
 
