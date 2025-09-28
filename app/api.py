@@ -1028,20 +1028,11 @@ def dashboard_alias(last_days: int = Query(default=7, ge=1, le=30), feature_set:
     return overview(last_days=last_days, feature_set=feature_set)
 
 
-@router.get("/", response_class=HTMLResponse, include_in_schema=False)
+@router.get("/", include_in_schema=False)
 def index():
-    return HTMLResponse("""
-    <html><head><title>NILM API</title><style>body{font-family:system-ui;background:#111;color:#eee;padding:1.2rem;}</style></head>
-    <body>
-    <h1>NILM API</h1>
-    <ul>
-      <li><a href='/overview'>/overview</a> – Dashboard</li>
-      <li><a href='/viz'>/viz</a> – Quick viz</li>
-      <li><a href='/clusters'>/clusters</a></li>
-      <li><a href='/devices'>/devices</a></li>
-      <li><a href='/sessions'>/sessions</a></li>
-      <li><a href='/autolabel'>/autolabel</a> (GET dry-run)</li>
-      <li><a href='/docs'>/docs</a> – OpenAPI</li>
-    </ul>
-    </body></html>
-    """)
+    return {
+        "service": "nilm-pipeline",
+        "description": "Event-based NILM pipeline (minute data, step events, clustering)",
+        "endpoints": ["/health", "/scan", "/docs"],
+        "docs": "/docs",
+    }
