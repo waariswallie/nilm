@@ -17,6 +17,83 @@ import numpy as np
 router = APIRouter()
 _label_store = LabelStore(path="labels.json")
 
+PHASE_NAMES = ("L1", "L2", "L3")
+
+
+def _format_phase_summary(share_map: Dict[str, float], dominant: str | None) -> str | None:
+    summary_parts = [f"{ph} {share_map.get(ph, 0.0)*100:.0f}%" for ph in PHASE_NAMES if share_map.get(ph, 0.0) > 0.01]
+    if not summary_parts:
+        summary = None
+    else:
+        summary = " · ".join(summary_parts)
+    if dominant == "mixed" and summary:
+        return f"mixed · {summary}"
+    if dominant and dominant != "mixed":
+        return f"{dominant} ⋆" + (f" · {summary}" if summary else "")
+    return summary
+
+
+def _phase_stats_from_group(group: pd.DataFrame, total_energy: float | None = None) -> Dict[str, Any]:
+    energy_map: Dict[str, float] = {ph: 0.0 for ph in PHASE_NAMES}
+    avg_map: Dict[str, float | None] = {ph: None for ph in PHASE_NAMES}
+    abs_map: Dict[str, float] = {ph: 0.0 for ph in PHASE_NAMES}
+    has_phase = False
+
+    for ph in PHASE_NAMES:
+        dp_col = f"dP_{ph}_kW"
+        if dp_col in group.columns:
+            series = pd.to_numeric(group[dp_col], errors="coerce")
+            valid = series.dropna()
+            if not valid.empty:
+                avg_map[ph] = float(valid.mean())
+                abs_map[ph] = float(np.abs(valid).sum())
+                has_phase = True
+        energy_col = f"energy_{ph}_kWh"
+        if energy_col in group.columns:
+            energy_series = pd.to_numeric(group[energy_col], errors="coerce")
+            if energy_series.notna().any():
+                energy_map[ph] = float(np.nansum(energy_series.to_numpy()))
+
+    total_abs = sum(abs_map.values())
+    if total_energy is None or total_energy <= 0:
+        total_energy = sum(energy_map.values())
+
+    share_map: Dict[str, float] = {}
+    if total_energy and abs(total_energy) > 1e-9:
+        for ph in PHASE_NAMES:
+            share_map[ph] = energy_map[ph] / total_energy if total_energy else 0.0
+    elif total_abs > 0:
+        for ph in PHASE_NAMES:
+            share_map[ph] = abs_map[ph] / total_abs
+    else:
+        share_map = {ph: 0.0 for ph in PHASE_NAMES}
+
+    sorted_shares = sorted(share_map.items(), key=lambda x: x[1], reverse=True)
+    dominant = None
+    balance = 0.0
+    if sorted_shares:
+        top_phase, top_val = sorted_shares[0]
+        second_val = sorted_shares[1][1] if len(sorted_shares) > 1 else 0.0
+        balance = float(top_val - second_val)
+        if top_val > 0:
+            if top_val >= 0.55 or (top_val - second_val) >= 0.2:
+                dominant = top_phase
+            else:
+                dominant = "mixed"
+
+    abs_share_map: Dict[str, float] = {ph: (abs_map[ph] / total_abs if total_abs > 0 else 0.0) for ph in PHASE_NAMES}
+
+    return {
+        "phase_present": bool(has_phase or total_abs > 0 or (total_energy and total_energy > 0)),
+        "phase_energy_kWh": energy_map,
+        "phase_share": share_map,
+        "phase_abs_share": abs_share_map,
+        "avg_dP_phase_kW": avg_map,
+        "phase_dominant": dominant,
+        "phase_balance": balance,
+        "phase_summary": _format_phase_summary(share_map, dominant),
+    }
+
 
 @router.get("/health")
 def health():
@@ -268,7 +345,7 @@ def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30),
                         cid_int = int(str(cid))
                     except Exception:
                         cid_int = -1
-            cluster_stats.append({
+            entry = {
                 "cluster": cid_int,
                 "count": int(len(g)),
                 "avg_dP_kW": float(g["dP_on_kW"].mean()),
@@ -281,7 +358,9 @@ def clusters_endpoint(last_days: int = Query(default=7, ge=1, le=30),
                 "duration_min_min": float(g["duration_min"].min() if g["duration_min"].notna().any() else 0),
                 "duration_min_max": float(g["duration_min"].max() if g["duration_min"].notna().any() else 0),
                 "hours": hours,
-            })
+            }
+            entry.update(_phase_stats_from_group(g, total_energy=entry.get("total_energy_kWh")))
+            cluster_stats.append(entry)
     cluster_stats = enrich_cluster_stats(cluster_stats)
     enriched = apply_suggestions(cluster_stats, _label_store, extended=(feature_set == "extended"), debug=debug)
     note = None
@@ -320,7 +399,7 @@ def autolabel_endpoint(last_days: int = Query(default=7, ge=1, le=30), overwrite
                     cid_int = int(str(cid))
                 except Exception:
                     cid_int = -1
-            cluster_stats.append({
+            entry = {
                 "cluster": cid_int,
                 "count": int(len(g)),
                 "avg_dP_kW": float(g["dP_on_kW"].mean()),
@@ -337,7 +416,9 @@ def autolabel_endpoint(last_days: int = Query(default=7, ge=1, le=30), overwrite
                 "dows": list(g["t_on"].dt.weekday) if "t_on" in g else [],
                 "first_ts": g["t_on"].min().isoformat() if "t_on" in g else None,
                 "last_ts": g["t_on"].max().isoformat() if "t_on" in g else None,
-            })
+            }
+            entry.update(_phase_stats_from_group(g, total_energy=entry.get("total_energy_kWh")))
+            cluster_stats.append(entry)
     cluster_stats = enrich_cluster_stats(cluster_stats)
     result = auto_label_clusters(cluster_stats, _label_store, overwrite=overwrite, extended=(feature_set == "extended"))
     enriched = apply_suggestions(cluster_stats, _label_store, extended=(feature_set == "extended"))
@@ -378,7 +459,7 @@ def autolabel_get(last_days: int = Query(default=7, ge=1, le=30),
                     cid_int = int(str(cid))
                 except Exception:  # noqa: BLE001
                     cid_int = -1
-            cluster_stats.append({
+            entry = {
                 "cluster": cid_int,
                 "count": int(len(g)),
                 "avg_dP_kW": float(g["dP_on_kW"].mean()),
@@ -395,7 +476,9 @@ def autolabel_get(last_days: int = Query(default=7, ge=1, le=30),
                 "dows": list(g["t_on"].dt.weekday) if "t_on" in g else [],
                 "first_ts": g["t_on"].min().isoformat() if "t_on" in g else None,
                 "last_ts": g["t_on"].max().isoformat() if "t_on" in g else None,
-            })
+            }
+            entry.update(_phase_stats_from_group(g, total_energy=entry.get("total_energy_kWh")))
+            cluster_stats.append(entry)
     cluster_stats = enrich_cluster_stats(cluster_stats)
     enriched = apply_suggestions(cluster_stats, _label_store, extended=(feature_set == "extended"), debug=debug)
     return {"lookback_days": last_days, "applied": [], "skipped": [], "clusters": enriched, "feature_set": feature_set, "debug": debug, "note": "GET /autolabel is dry-run; gebruik POST om labels op te slaan."}
@@ -507,7 +590,7 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
                 daily_map = {str(d): float(v) for d, v in by_day.items()}
             elif series_mode == "sessions":
                 daily_map = sessions_daily_map.get(cid_int, {})
-        clusters[cid_int] = {
+        cluster_entry = {
             "cluster": cid_int,
             "events": int(len(g)),
             "avg_dP_kW": float(g["dP_on_kW"].mean()),
@@ -528,6 +611,8 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
             "dows": list(g["t_on"].dt.weekday) if "t_on" in g else [],
             "series_daily": daily_map if include_series else None,
         }
+        cluster_entry.update(_phase_stats_from_group(g, total_energy=total_energy))
+        clusters[cid_int] = cluster_entry
 
     # Enrich with heuristics & suggestions
     raw_list = list(clusters.values())
@@ -558,6 +643,8 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
                     "first_seen": d.get("first_seen"),
                     "last_seen": d.get("last_seen"),
                     "series_acc": {} if include_series else None,
+                    "phase_energy_acc": {ph: float((d.get("phase_energy_kWh") or {}).get(ph, 0.0)) for ph in PHASE_NAMES},
+                    "phase_present": bool(d.get("phase_present")),
                 }
             else:
                 m = merged[key]
@@ -571,6 +658,12 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
                 if d.get("last_seen") and (m["last_seen"] is None or d["last_seen"] > m["last_seen"]):
                     m["last_seen"] = d["last_seen"]
                 m["median_durations"].append(d["median_duration_min"])
+                # accumulate per-phase energy
+                phase_map = d.get("phase_energy_kWh") or {}
+                acc = m.setdefault("phase_energy_acc", {ph: 0.0 for ph in PHASE_NAMES})
+                for ph in PHASE_NAMES:
+                    acc[ph] = acc.get(ph, 0.0) + float(phase_map.get(ph, 0.0))
+                m["phase_present"] = bool(m.get("phase_present")) or bool(d.get("phase_present"))
             # accumulate series
             if include_series:
                 src_map = d.get("series_daily") or {}
@@ -587,6 +680,24 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
                 # normalize to sorted list
                 days_sorted = sorted(m["series_acc"].keys())
                 series_out = [{"day": d, "kWh": round(m["series_acc"][d], 4)} for d in days_sorted]
+            phase_energy_map = {ph: float(m.get("phase_energy_acc", {}).get(ph, 0.0)) for ph in PHASE_NAMES}
+            total_energy = m.get("total_energy_kWh", 0.0) or 0.0
+            if total_energy > 0:
+                phase_share_map = {ph: phase_energy_map[ph] / total_energy for ph in PHASE_NAMES}
+            else:
+                phase_share_map = {ph: 0.0 for ph in PHASE_NAMES}
+            sorted_shares = sorted(phase_share_map.items(), key=lambda x: x[1], reverse=True)
+            dominant = None
+            balance = 0.0
+            if sorted_shares:
+                top_phase, top_val = sorted_shares[0]
+                second_val = sorted_shares[1][1] if len(sorted_shares) > 1 else 0.0
+                balance = top_val - second_val
+                if top_val > 0:
+                    if top_val >= 0.55 or (top_val - second_val) >= 0.2:
+                        dominant = top_phase
+                    else:
+                        dominant = "mixed"
             devices_out.append({
                 "name": m["name"],
                 "clusters": m["clusters"],
@@ -601,6 +712,12 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
                 "last_seen": m.get("last_seen"),
                 "merged": True,
                 "series_daily": series_out,
+                "phase_present": bool(m.get("phase_present")),
+                "phase_energy_kWh": {ph: round(val, 4) for ph, val in phase_energy_map.items()},
+                "phase_share": {ph: round(phase_share_map[ph], 4) for ph in PHASE_NAMES},
+                "phase_dominant": dominant,
+                "phase_balance": round(balance, 4),
+                "phase_summary": _format_phase_summary(phase_share_map, dominant),
             })
     else:
         for d in enriched:
@@ -608,6 +725,15 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
             source = d.get("label_source") or ("suggested" if d.get("suggested_label") else None)
             # share computed later after baseload (if any) is known; set placeholder 0 for now
             share = 0.0
+            phase_energy_map = {ph: float((d.get("phase_energy_kWh") or {}).get(ph, 0.0)) for ph in PHASE_NAMES}
+            total_energy = d.get("total_energy_kWh", 0.0) or 0.0
+            if total_energy > 0:
+                phase_share_map = {ph: phase_energy_map[ph] / total_energy for ph in PHASE_NAMES}
+            else:
+                phase_share_map = {ph: 0.0 for ph in PHASE_NAMES}
+            dominant = d.get("phase_dominant")
+            if dominant not in (*PHASE_NAMES, "mixed", None):
+                dominant = None
             devices_out.append({
                 "name": label,
                 "cluster": d["cluster"],
@@ -625,6 +751,12 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
                     [{"day": k, "kWh": round(v, 4)} for k, v in sorted((d.get("series_daily") or {}).items())]
                     if include_series else None
                 ),
+                "phase_present": bool(d.get("phase_present")),
+                "phase_energy_kWh": {ph: round(val, 4) for ph, val in phase_energy_map.items()},
+                "phase_share": {ph: round(phase_share_map[ph], 4) for ph in PHASE_NAMES},
+                "phase_dominant": dominant,
+                "phase_balance": round(d.get("phase_balance", 0.0), 4) if d.get("phase_balance") is not None else None,
+                "phase_summary": d.get("phase_summary") or _format_phase_summary(phase_share_map, dominant),
             })
 
     # Optionally add baseload approximation device
@@ -651,6 +783,12 @@ def devices_endpoint(last_days: int = Query(default=7, ge=1, le=30), include_noi
                 "last_seen": df.index.max().isoformat() if not df.empty else None,
                 "merged": True,
                 "series_daily": [{"day": d, "kWh": round(v, 4)} for d, v in sorted(daily_energy.items())] if include_series else None,
+                "phase_present": False,
+                "phase_energy_kWh": {ph: 0.0 for ph in PHASE_NAMES},
+                "phase_share": {ph: 0.0 for ph in PHASE_NAMES},
+                "phase_dominant": None,
+                "phase_balance": None,
+                "phase_summary": None,
             })
         except Exception:  # noqa: BLE001
             pass

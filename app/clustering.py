@@ -11,8 +11,10 @@ def build_event_frame(events) -> pd.DataFrame:
     for e in events:
         duration = (e.t_off - e.t_on).total_seconds() / 60 if e.t_off else np.nan
         if e.phase_dP:
-            L1, L2, L3 = e.phase_dP
+            phase_vec = np.array(e.phase_dP, dtype=float)
+            L1, L2, L3 = phase_vec.tolist()
         else:
+            phase_vec = np.array([np.nan, np.nan, np.nan], dtype=float)
             L1 = L2 = L3 = np.nan
         energy_kwh = None
         if duration and duration > 0 and e.dP_on is not None:
@@ -20,6 +22,15 @@ def build_event_frame(events) -> pd.DataFrame:
                 energy_kwh = (e.dP_on * duration) / 60.0  # crude rectangle approximation
             except Exception:  # noqa: BLE001
                 energy_kwh = None
+        phase_shares = np.array([np.nan, np.nan, np.nan], dtype=float)
+        phase_energy = np.array([np.nan, np.nan, np.nan], dtype=float)
+        if np.isfinite(phase_vec).any():
+            abs_vec = np.abs(np.nan_to_num(phase_vec, nan=0.0))
+            total_abs = abs_vec.sum()
+            if total_abs > 0:
+                phase_shares = abs_vec / total_abs
+                if energy_kwh is not None:
+                    phase_energy = phase_shares * energy_kwh
         rows.append({
             "t_on": e.t_on,
             "t_off": e.t_off,
@@ -31,6 +42,12 @@ def build_event_frame(events) -> pd.DataFrame:
             "hour": e.t_on.hour,
             "weekday": e.t_on.weekday(),
             "energy_kWh": energy_kwh,
+            "phase_share_L1": float(phase_shares[0]) if np.isfinite(phase_shares[0]) else None,
+            "phase_share_L2": float(phase_shares[1]) if np.isfinite(phase_shares[1]) else None,
+            "phase_share_L3": float(phase_shares[2]) if np.isfinite(phase_shares[2]) else None,
+            "energy_L1_kWh": float(phase_energy[0]) if np.isfinite(phase_energy[0]) else None,
+            "energy_L2_kWh": float(phase_energy[1]) if np.isfinite(phase_energy[1]) else None,
+            "energy_L3_kWh": float(phase_energy[2]) if np.isfinite(phase_energy[2]) else None,
         })
     return pd.DataFrame(rows)
 
